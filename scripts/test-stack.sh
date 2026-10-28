@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds and starts the full production stack (Postgres, app, Caddy with HTTPS, backups) with a
-# mock email/SMS provider, then runs the end-to-end tests through Caddy:
+# mock email/Zoho WhatsApp+voice provider, then runs the end-to-end tests through Caddy:
 #   1. unit tests, 2. full user flows, 3. restart the app and check state survived,
 #   4. take a backup, restore it with scripts/restore.sh, check again.
 # Needs Docker and free ports 80, 443, 3000 and 8025 on this machine. Tears everything down after

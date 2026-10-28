@@ -3,8 +3,8 @@
 The volunteer website for the PBAT DOOR TO DOOR movement, served at **https://pbatdoor2door2027.org** (`www` redirects to it).
 
 - **Landing page** (`/`): the movement and its Founder & Convener, Tompolo; the President's photo, a short bio timeline, and the administration's works, each linked to its source.
-- **Join or log in** (`/login`; `/join` and `/signup` redirect here): type an email **or** a Nigerian phone number, then the 6-digit code. The first sign-in creates the account.
-- **My account** (`/account`; `/welcome` redirects here): "Complete your profile" (full name, state and LGA required; the rest optional), edit details, link a second email or phone (which merges duplicate accounts), see signed-in devices, log out of one or all devices. Sessions last until the member logs out.
+- **Join or log in** (`/login`; `/join` and `/signup` redirect here): pick **Email** or **Phone** (side-by-side tabs; the phone box has a fixed 🇳🇬 +234 prefix and accepts 0803…, 803… or +234… forms), then type the 6-digit code. The page says where the code went ("Code sent via WhatsApp to +234 803 ••• •567"), and with Zoho Voice set up offers "Call me with the code". The first sign-in creates the account.
+- **My account** (`/account`; `/welcome` redirects here): "Complete your profile" (full name, state and LGA required; the rest optional), edit details, link a second email or phone (which merges duplicate accounts), see signed-in devices, log out of one or all devices. Sessions last until the member logs out (the cookie is rolled, at most once a day, so the browser's ~400-day cap doesn't drop it).
 - **Polling units**: state → LGA → ward → polling unit lists from INEC data (176,846 units) in `public/geo/`, plus **"near me"**, which suggests the closest units from the phone's GPS (`/api/geo/near`).
 
 It runs as three containers on one server: **Caddy** (HTTPS), the **Node.js app**, and **PostgreSQL**, plus a small **backup** container.
@@ -183,7 +183,9 @@ If several are set, the first one wins in this order: Brevo, ZeptoMail, Resend, 
 
 ### Phone sign-in (optional)
 
-Without a phone option configured, production runs email-only and the page says phone sign-in isn't available yet. Options (texting costs money with every provider):
+Without a phone option configured, production runs email-only and the Phone tab says phone sign-in is coming soon. Options (every message or call costs money with every provider). If several are set, the first one wins in this order: Zoho CPaaS, Message Central, DageSMS, Termii, Twilio; Firebase is used only when none of these is set.
+
+- **Zoho CPaaS** (WhatsApp, with an optional voice-call fallback): the same Zoho account as ZeptoMail. See the next section.
 
 - **Google Firebase** (no Sender ID or CAC): set `FIREBASE_API_KEY` and `FIREBASE_PROJECT_ID`, and add `pbatdoor2door2027.org` and `www.pbatdoor2door2027.org` under Firebase → Authentication → Settings → **Authorized domains**. The browser does the code step with Firebase (invisible reCAPTCHA) and the server verifies Google's signed token. The Content-Security-Policy allows Google's script, reCAPTCHA and Firebase origins automatically when Firebase is configured. If the phone step is ever blocked by the browser, set `CSP_MODE=report-only`, redeploy, and check the browser console for the blocked address.
 - **Message Central VerifyNow** (`MC_CUSTOMER_ID`, `MC_PASSWORD`; `MC_FLOW=WHATSAPP` for WhatsApp).
@@ -191,7 +193,52 @@ Without a phone option configured, production runs email-only and the page says 
 - **Termii** (`TERMII_API_KEY`, `TERMII_SENDER_ID`).
 - **Twilio** (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`).
 
-Each visitor IP can request at most 10 codes per hour (`OTP_IP_LIMIT_PER_HOUR`), to protect SMS credit. The count is kept in Postgres, so restarts don't reset it.
+Limits that protect the credit: each email/number gets one new code per minute; each visitor IP can request at most 10 codes per hour (`OTP_IP_LIMIT_PER_HOUR`); and each phone number can be sent at most 5 codes per day, sign-in and linking together, whichever connection asks (`OTP_PHONE_LIMIT_PER_DAY`). The counts are kept in Postgres, so restarts don't reset them.
+
+**If Zoho WhatsApp can't be set up** (for example Meta business verification stalls), the quickest working fallback for Nigerian numbers is **Message Central** (no Sender ID or CAC; set `MC_CUSTOMER_ID` and `MC_PASSWORD`, optionally `MC_FLOW=WHATSAPP`). For your own branded Sender ID with the DND route, use **Termii** (`TERMII_API_KEY`, `TERMII_SENDER_ID`, after Termii approves the Sender ID). Leave the `ZOHO_*` values empty so those take over.
+
+### Phone sign-in with Zoho CPaaS (WhatsApp, voice fallback)
+
+What Zoho supports (from Zoho's CPaaS API docs, October 2026):
+
+- **SMS: not for Nigeria.** Zoho CPaaS SMS only sends from registered Indian senders to Indian numbers (accounts in the India data centre). That's why the account shows Email, WhatsApp and Voice only.
+- **WhatsApp: yes**, the documented way to send OTPs. `POST https://cpaas.zoho.com/v1.1/whatsapp` with a Meta-approved **Authentication** template, header `Authorization: Zoho-enczapikey <key>`. Zoho queues the message and reports delivery failures (for example a number that isn't on WhatsApp) only in its message logs, not to the app.
+- **Voice: yes**, optional. `POST https://cpaas.zoho.com/v1.1/voice` places an automated call from a Zoho Voice number you buy; the app reads the code out with text-to-speech (or uses a voice template). Zoho offers voice for accounts in its US, IN, EU and AU data centres.
+- **API keys are per channel.** Each Zoho Agent has a separate key for email, WhatsApp and voice (Agents → the agent → SMTP/API). The ZeptoMail email key (`ZEPTOMAIL_TOKEN`) is rejected by the WhatsApp and voice APIs (`SERR_157`, invalid API token).
+
+How the app uses it: the code goes by WhatsApp. If Zoho refuses the WhatsApp send and voice is set up, the app calls the number instead. Because WhatsApp delivery failures only show up later, the code page also offers **"Call me with the code"** (after the one-minute resend wait) when voice is set up. The app creates and checks the code itself (10 minutes, 5 tries), as with the other providers.
+
+**Set up WhatsApp (in Meta and Zoho):**
+
+1. **Meta Business account**: at [business.facebook.com](https://business.facebook.com) create (or use) the business account for the movement.
+2. **Meta business verification**: Business settings → Security Centre → **Start verification**. Have the CAC certificate (or other registration document), an address/utility document with the same name and address, and a website on the same domain (`pbatdoor2door2027.org`, with an email address on it for the verification code). Until it's verified, Meta caps how many people the number can message per day and may limit the display name.
+3. **A sender number**: a phone number that can receive an SMS or call for verification and is **not** in use on WhatsApp or the WhatsApp Business app (delete it from the app first if it is). Customers see this number, so a Nigerian (+234) number is best.
+4. **Connect it in Zoho**: Zoho CPaaS → Configuration → WhatsApp → **Add WABA**, sign in with the Meta Business account, select or create the WhatsApp Business Account, and verify the number. Then, in the WABA's **Configuration** tab, set the number's **Associated Agent** to the agent the app will use (the ZeptoMail agent or a new one, e.g. "pbat-otp").
+5. **Authentication template**: Configuration → WhatsApp → Templates → **+ Add template** → Type **Authentication**, name e.g. `pbat_login_code` (no spaces), language English → **Send for approval**. Meta fixes the wording ("*123456* is your verification code…"). Once the status is **Approved**, copy its **Template key** (or the alias you gave it). Note the name of the variable that holds the code in the template details; if it isn't `code`, set `ZOHO_WA_CODE_VAR` to it.
+6. **WhatsApp API key**: Agents → the agent → **SMTP/API** → API Setup → copy the **WhatsApp** key.
+7. **Credit**: WhatsApp messages are charged per Authentication message (Meta's rate for Nigeria plus Zoho credits); top up the Zoho CPaaS balance.
+
+**Set up voice (optional fallback):**
+
+1. Configuration → Voice → **Documents**: upload the business registration certificate and an address proof (some countries ask for ID too).
+2. Configuration → Voice → **Buy number**: pick a number (numbers can't be bought with trial credits; only the Postmaster role can buy), attach the document, and wait for Zoho support to approve it. Assign it to the same agent.
+3. Ask Zoho CPaaS support to confirm that calls to Nigerian (+234) mobiles are enabled for your account and at what per-minute rate.
+4. Agents → the agent → SMTP/API → copy the **Voice** key.
+
+**Then in `/opt/pbatdoor2door/.env`** (quotes are needed around anything with a space):
+
+```bash
+ZOHO_WA_TOKEN="<the agent's WhatsApp API key>"
+ZOHO_WA_FROM="+234XXXXXXXXXX"                 # the WhatsApp sender number from step 3
+ZOHO_WA_TEMPLATE="<template key or alias>"    # from step 5
+# ZOHO_WA_CODE_VAR=code                       # only if the template's code variable has another name
+# Optional voice fallback:
+ZOHO_VOICE_TOKEN="<the agent's Voice API key>"
+ZOHO_VOICE_FROM="+1XXXXXXXXXX"                # the Zoho Voice number
+# OTP_PHONE_LIMIT_PER_DAY=5
+```
+
+Run `docker compose up -d` (or `scripts/deploy.sh`), check `docker compose logs app | grep 'is running'` shows `sms: zoho-whatsapp+voice` (or `zoho-whatsapp`), then sign in on the Phone tab with your own number. Zoho's message logs (Reports/Logs in CPaaS) show each message's delivery status; `process_failed` usually means the template variable name doesn't match `ZOHO_WA_CODE_VAR`.
 
 ---
 
@@ -313,7 +360,7 @@ scripts/restore.sh backups/daily/pbat-YYYYMMDD-HHMMSS.dump    # type "restore" t
 
 ## 8. Environment variables
 
-All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit `.env`). Quote values containing spaces or `<>`; avoid `$`.
+All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit `.env`). `scripts/deploy.sh` reads the file as a shell script (`. ./.env`), so **quote any value containing spaces or `<>`**, e.g. `MAIL_FROM="PBAT DOOR TO DOOR <no-reply@pbatdoor2door2027.org>"` or a key pasted with its `Zoho-enczapikey ` prefix; unquoted, the deploy fails or the value is cut at the space. Avoid `$`.
 
 | Variable | Purpose |
 |---|---|
@@ -332,11 +379,16 @@ All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit
 | `GMAIL_SCRIPT_URL`, `GMAIL_SCRIPT_SECRET` | Gmail via Google Apps Script (`apps-script/Code.gs`, ~100 emails/day). |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | SMTP (blocked on Linode by default). |
 | `FIREBASE_API_KEY`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_SDK_URL`, `FIREBASE_JWKS_URL` | Firebase phone sign-in. |
+| `ZOHO_WA_TOKEN`, `ZOHO_WA_FROM`, `ZOHO_WA_TEMPLATE`, `ZOHO_WA_CODE_VAR` | Zoho CPaaS WhatsApp codes: the agent's WhatsApp API key, sender number, Authentication template key or alias, and its code variable (default `code`). |
+| `ZOHO_VOICE_TOKEN`, `ZOHO_VOICE_FROM`, `ZOHO_VOICE_TEMPLATE`, `ZOHO_VOICE_CODE_VAR`, `ZOHO_VOICE_LANGUAGE` | Zoho CPaaS voice calls (fallback and "Call me with the code"): the agent's Voice API key and number; optional voice template (default: text-to-speech). |
+| `ZOHO_CPAAS_API_URL` | Zoho CPaaS API base (default `https://cpaas.zoho.com/v1.1`). |
 | `MC_CUSTOMER_ID`, `MC_PASSWORD` / `MC_KEY`, `MC_FLOW`, `MC_EMAIL`, `MC_BASE_URL` | Message Central. |
 | `DAGESMS_API_KEY`, `DAGESMS_SENDER`, `DAGESMS_ROUTE`, `DAGESMS_BASE_URL` | DageSMS. |
 | `TERMII_API_KEY`, `TERMII_SENDER_ID`, `TERMII_CHANNEL`, `TERMII_BASE_URL` | Termii. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Twilio. |
 | `OTP_IP_LIMIT_PER_HOUR` | Codes per visitor IP per hour (default 10). |
+| `OTP_PHONE_LIMIT_PER_DAY` | Codes per phone number per day, sign-in and linking together (default 5). |
+| `SESSION_REFRESH_MS` | How often to re-issue the session cookie (default 1 day). Sessions on the server never expire; only logout deletes them. |
 | `CSP_MODE` | `enforce` (default), `report-only`, or `off`. |
 | `TRUST_PROXY` | Proxy hops in front of the app (default 1 = Caddy). Don't change. |
 | `LOG_LEVEL` | `info` (default), `debug`, `warn`… |
@@ -367,6 +419,8 @@ docker compose down                     # stop everything (data is kept in volum
 | No emails arrive | `docker compose logs app \| grep -i 'send failed'`. 401 = wrong key or Brevo Authorised IPs; unverified sender; or spam (finish SPF/DKIM). SMTP timeouts mean the port is blocked: switch to Brevo or ZeptoMail. |
 | Login works but you're bounced back to `/login` | You're on `http://` or the raw IP; use `https://pbatdoor2door2027.org`. |
 | Firebase `auth/unauthorized-domain` | Add both hostnames to Firebase Authorized domains. |
+| Phone codes fail with Zoho | `docker compose logs app \| grep -i zoho`. `SERR_157`: wrong key (use the agent's WhatsApp/Voice key, not the email one). `WSE_107` / `VOI_207`: the sender number is assigned to a different agent. `WA_103`: template not approved or not this agent's. Accepted but never arrives: check Zoho's message logs (`process_failed` = wrong `ZOHO_WA_CODE_VAR`; or the number isn't on WhatsApp, so use "Call me with the code"). |
+| "This number has had too many codes today" | The per-phone daily cap (`OTP_PHONE_LIMIT_PER_DAY`, default 5). It resets 24 hours after the earlier sends. |
 | `git pull` permission denied | Deploy key missing or removed on GitHub (section 2b). |
 | Disk filling up | `docker system df`; `docker image prune`; old backups rotate automatically. Container logs are capped at 5 × 10 MB per service. |
 
@@ -374,8 +428,8 @@ docker compose down                     # stop everything (data is kept in volum
 
 ## 10. Tests
 
-- `npm test`: unit tests (input validation, the polling-unit lookup compared with the original linear scan at hundreds of points, email provider request formats, CSP hashes).
-- `scripts/test-stack.sh`: builds and starts the **whole production stack** locally (Postgres, app with `NODE_ENV=production`, Caddy with HTTPS on a test domain using Caddy's internal CA, backups), with a mock standing in for Brevo and DageSMS, then runs `test/e2e/stack.test.js` through Caddy: health/readiness, HTTP→HTTPS and www→apex redirects, pages and legacy redirects, security headers, pre-compressed geo data, email sign-in (cooldown, wrong code, single-use code, Secure/HttpOnly/SameSite cookie, no codes leaked), profile validation and save, second device, phone sign-in, account linking and merge, logout and logout-all, `/api/geo/near`, the per-IP limit including that a spoofed `X-Forwarded-For` is ignored. It then restarts the app and checks sessions and the rate limit survived, takes a backup, restores it with `scripts/restore.sh`, and checks again. It needs free ports 80, 443, 3000 and 8025, so run it on a development machine or in CI, **not on the production server**.
+- `npm test`: unit tests (input validation including phone formats, the polling-unit lookup compared with the original linear scan at hundreds of points, email and Zoho WhatsApp/voice request formats, the voice fallback, provider order, CSP hashes).
+- `scripts/test-stack.sh`: builds and starts the **whole production stack** locally (Postgres, app with `NODE_ENV=production`, Caddy with HTTPS on a test domain using Caddy's internal CA, backups), with a mock standing in for Brevo and Zoho CPaaS (WhatsApp and voice), then runs `test/e2e/stack.test.js` through Caddy: health/readiness, HTTP→HTTPS and www→apex redirects, pages and legacy redirects, security headers, pre-compressed geo data, email sign-in (cooldown, wrong code, single-use code, Secure/HttpOnly/SameSite cookie, no codes leaked), rolling session-cookie refresh and that logout still revokes it, profile validation and save, second device, phone sign-in by Zoho WhatsApp (local 080… format, masked "sent to", cooldown), "call me" by voice, the voice fallback when WhatsApp refuses a number, account linking and merge, the per-phone daily cap across sign-in and linking, logout and logout-all, `/api/geo/near`, the per-IP limit including that a spoofed `X-Forwarded-For` is ignored. It then restarts the app and checks sessions and both rate limits survived, takes a backup, restores it with `scripts/restore.sh`, and checks again. It needs free ports 80, 443, 3000 and 8025, so run it on a development machine or in CI, **not on the production server**.
 
 Both run automatically in GitHub Actions on every pull request and push (section 6, "Automatic deploys").
 

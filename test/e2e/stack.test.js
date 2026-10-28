@@ -1,7 +1,7 @@
 // End-to-end tests against the running docker compose stack (see scripts/test-stack.sh).
 //   SITE        https://pbat.test        — through Caddy, like a visitor
 //   APP_URL     http://127.0.0.1:3000    — the app's loopback port (used to simulate other IPs)
-//   MOCK_URL    http://127.0.0.1:8025    — mock email/SMS provider that records the codes
+//   MOCK_URL    http://127.0.0.1:8025    — mock email/Zoho WhatsApp+voice/SMS provider that records the codes
 //   PHASE       main | after-restart     — after-restart checks state survived a restart/restore
 //   STATE_FILE  where phase "main" leaves data for later phases
 import { test } from 'node:test';
@@ -16,9 +16,15 @@ const MOCK_URL = process.env.MOCK_URL || 'http://127.0.0.1:8025';
 const PHASE = process.env.PHASE || 'main';
 const STATE_FILE = process.env.STATE_FILE || '/tmp/pbat-e2e-state.json';
 const IP_LIMIT = Number(process.env.OTP_IP_LIMIT_PER_HOUR || 40);
+const PHONE_LIMIT = Number(process.env.OTP_PHONE_LIMIT_PER_DAY || 5);
 
 const rnd = () => crypto.randomBytes(4).toString('hex');
-const randomPhone = () => `080${String(crypto.randomInt(10_000_000, 99_999_999))}`;
+// Numbers ending in 0000 are refused by the mock's WhatsApp (to test the voice fallback).
+const randomPhone = (suffix = '') => {
+  const p = `080${String(crypto.randomInt(10_000_000, 99_999_999))}`;
+  return suffix ? p.slice(0, -suffix.length) + suffix : p.endsWith('0000') ? `${p.slice(0, -1)}1` : p;
+};
+const randomIp = () => `198.51.100.${crypto.randomInt(1, 254)}`;
 const toE164 = (p) => `+234${p.slice(1)}`;
 
 /** A browser-like client with its own cookie jar. */
@@ -57,14 +63,16 @@ function client(base = SITE, extraHeaders = {}) {
   return c;
 }
 
-async function codeFor(to) {
+/** The latest code the mock delivered to `to`, and how: { code, channel: 'email' | 'whatsapp' | 'voice' | 'sms' }. */
+async function delivered(to) {
   for (let i = 0; i < 20; i++) {
     const r = await fetch(`${MOCK_URL}/codes?to=${encodeURIComponent(to)}`);
-    if (r.ok) return (await r.json()).code;
+    if (r.ok) return r.json();
     await new Promise((r2) => setTimeout(r2, 100));
   }
   throw new Error(`no code delivered to ${to}`);
 }
+const codeFor = async (to) => (await delivered(to)).code;
 
 async function signIn(c, identifier, deliveredTo = identifier) {
   const start = await c.post('/api/auth/start', { identifier });
@@ -143,6 +151,7 @@ if (PHASE === 'main') {
     assert.equal(data.sms, true);
     assert.equal(data.phoneVia, 'server');
     assert.equal(data.turnstile, null);
+    assert.deepEqual(data.phoneChannels, ['whatsapp', 'voice'], 'Zoho WhatsApp with a voice fallback');
     assert.equal(data.firebase, null);
   });
 
@@ -187,6 +196,7 @@ if (PHASE === 'main') {
     assert.match(devA1.lastSetCookie, /HttpOnly/i);
     assert.match(devA1.lastSetCookie, /Secure/i);
     assert.match(devA1.lastSetCookie, /SameSite=Lax/i);
+    assert.match(devA1.lastSetCookie, /Max-Age=34560000/i, '400-day browser cap, in seconds');
 
     const reuse = await client().post('/api/auth/verify', { identifier: emailA, code: await codeFor(emailA) });
     assert.equal(reuse.status, 400, 'a code is single-use');
@@ -225,8 +235,29 @@ if (PHASE === 'main') {
     assert.equal(me.data.sessions.length, 2);
   });
 
-  test('phone sign-in through the SMS provider', async () => {
-    const r = await signIn(devB, phoneB, toE164(phoneB));
+  test('the sign-in page loads the shared phone/email rules', async () => {
+    const r = await client().get('/validate.js');
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type'), /javascript/);
+    assert.match(r.text, /export function normalizePhone/);
+  });
+
+  test('phone sign-in through Zoho WhatsApp (local 080… format)', async () => {
+    const start = await devB.post('/api/auth/start', { identifier: phoneB });
+    assert.equal(start.status, 200, start.text);
+    assert.equal(start.data.type, 'phone');
+    assert.equal(start.data.via, 'whatsapp');
+    assert.equal(start.data.identifier, toE164(phoneB));
+    assert.equal(start.data.sentTo, `+234 ${phoneB.slice(1, 4)} ••• •${phoneB.slice(-3)}`);
+    assert.equal(start.data.devCode, undefined);
+    assert.equal((await delivered(toE164(phoneB))).channel, 'whatsapp');
+
+    const again = await devB.post('/api/auth/start', { identifier: phoneB, channel: 'voice' });
+    assert.equal(again.status, 429, '"call me instead" shares the resend cooldown');
+
+    const verify = await devB.post('/api/auth/verify', { identifier: phoneB, code: await codeFor(toE164(phoneB)) });
+    assert.equal(verify.status, 200, verify.text);
+    const r = verify.data;
     assert.equal(r.isNew, true);
     assert.equal(r.member.phone, toE164(phoneB));
     const saved = await devB.post('/api/me', { ...PROFILE, full_name: 'Bayo Test', occupation: 'Trader', email: '' });
@@ -239,6 +270,7 @@ if (PHASE === 'main') {
 
     const start = await devA1.post('/api/me/link/start', { identifier: phoneB });
     assert.equal(start.status, 200, start.text);
+    assert.equal(start.data.via, 'whatsapp');
     const bad = await devA1.post('/api/me/link/verify', { identifier: phoneB, code: '12345' });
     assert.equal(bad.status, 400);
     const ok = await devA1.post('/api/me/link/verify', { identifier: phoneB, code: await codeFor(toE164(phoneB)) });
@@ -257,6 +289,75 @@ if (PHASE === 'main') {
     const viaPhone = await signIn(client(), phoneB, toE164(phoneB));
     assert.equal(viaPhone.member.email, emailA);
     assert.equal((await devA1.get('/api/me')).data.sessions.length, 4);
+  });
+
+  test('"call me instead": a voice call reads out the code', async () => {
+    const phone = randomPhone();
+    const start = await client().post('/api/auth/start', { identifier: `+234 ${phone.slice(1)}`, channel: 'voice' });
+    assert.equal(start.status, 200, start.text);
+    assert.equal(start.data.via, 'voice');
+    const d = await delivered(toE164(phone));
+    assert.equal(d.channel, 'voice');
+    const ok = await client().post('/api/auth/verify', { identifier: phone, code: d.code });
+    assert.equal(ok.status, 200, ok.text);
+  });
+
+  test('a number WhatsApp refuses falls back to a voice call; unknown channels are ignored', async () => {
+    const refused = randomPhone('0000');
+    const start = await client().post('/api/auth/start', { identifier: refused });
+    assert.equal(start.status, 200, start.text);
+    assert.equal(start.data.via, 'voice');
+    assert.equal((await delivered(toE164(refused))).channel, 'voice');
+
+    const other = randomPhone();
+    const odd = await client().post('/api/auth/start', { identifier: other, channel: 'carrier-pigeon' });
+    assert.equal(odd.status, 200, odd.text);
+    assert.equal(odd.data.via, 'whatsapp');
+  });
+
+  test('per-phone daily cap covers sign-in and linking, from any connection', async () => {
+    const phone = randomPhone();
+    for (let i = 0; i < PHONE_LIMIT; i++) {
+      const c = client(APP_URL, { 'X-Forwarded-For': randomIp() });   // a new connection each time
+      const start = await c.post('/api/auth/start', { identifier: phone });
+      assert.equal(start.status, 200, `code ${i + 1}: ${start.text}`);
+      const ok = await c.post('/api/auth/verify', { identifier: phone, code: await codeFor(toE164(phone)) });
+      assert.equal(ok.status, 200, ok.text);                          // a used code ends the cooldown
+    }
+    const capped = await client(APP_URL, { 'X-Forwarded-For': randomIp() }).post('/api/auth/start', { identifier: phone });
+    assert.equal(capped.status, 429);
+    assert.equal(capped.data.dailyLimit, true);
+    assert.match(capped.data.error, /too many codes today/);
+
+    const linker = client(APP_URL, { 'X-Forwarded-For': randomIp() });
+    await signIn(linker, `linker-${rnd()}@example.com`);
+    const link = await linker.post('/api/me/link/start', { identifier: phone });
+    assert.equal(link.status, 429, 'linking shares the cap');
+    assert.equal(link.data.dailyLimit, true);
+
+    assert.equal((await linker.post('/api/auth/start', { identifier: `cap-${rnd()}@example.com` })).status, 200, 'emails are not capped');
+    state.cappedPhone = phone;
+  });
+
+  test('rolling session cookie is re-issued; logout still fully revokes it', async () => {
+    const c = client();
+    const email = `roll-${rnd()}@example.com`;
+    await signIn(c, email);
+    const token = c.sid;
+    const me = await c.get('/api/me');
+    assert.equal(me.status, 200, me.text);
+    assert.ok(me.headers.getSetCookie().some((h) => h.startsWith('sid=')), 'authenticated request re-issues the cookie');
+    assert.equal(c.sid, token, 'same session token');
+    assert.match(c.lastSetCookie, /HttpOnly/i);
+    assert.match(c.lastSetCookie, /Secure/i);
+    assert.match(c.lastSetCookie, /SameSite=Lax/i);
+    assert.match(c.lastSetCookie, /Max-Age=34560000/i);
+
+    assert.equal((await c.post('/api/auth/logout')).status, 200);
+    assert.equal(c.sid, null);
+    assert.equal((await c.get('/api/me')).status, 401);
+    const stale = client(); stale.sid = token;
+    assert.equal((await stale.get('/api/me')).status, 401, 'the old cookie is dead on the server');
   });
 
   test('logout this device, then log out everywhere', async () => {
@@ -286,7 +387,7 @@ if (PHASE === 'main') {
   });
 
   test('per-IP code limit is enforced, and X-Forwarded-For from visitors is ignored by Caddy', async () => {
-    const ip = `198.51.100.${crypto.randomInt(1, 254)}`;
+    const ip = `203.0.113.${crypto.randomInt(1, 254)}`;
     const direct = client(APP_URL, { 'X-Forwarded-For': ip });
     for (let i = 0; i < IP_LIMIT; i++) {
       const r = await direct.post('/api/auth/start', { identifier: `limit-${rnd()}@example.com` });
@@ -328,5 +429,11 @@ if (PHASE === 'after-restart') {
     const direct = client(APP_URL, { 'X-Forwarded-For': state.blockedIp });
     const r = await direct.post('/api/auth/start', { identifier: `limit-${rnd()}@example.com` });
     assert.equal(r.status, 429);
+  });
+
+  test('the per-phone daily cap survives a restart', async () => {
+    const r = await client(APP_URL, { 'X-Forwarded-For': `192.0.2.${crypto.randomInt(1, 254)}` }).post('/api/auth/start', { identifier: state.cappedPhone });
+    assert.equal(r.status, 429);
+    assert.equal(r.data.dailyLimit, true);
   });
 }

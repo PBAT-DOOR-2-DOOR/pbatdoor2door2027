@@ -14,9 +14,19 @@ services:
       BREVO_API_KEY: test-key
       BREVO_API_URL: http://mock:8025/brevo
       MAIL_FROM: "PBAT DOOR TO DOOR <no-reply@pbat.test>"
+      # Zoho CPaaS (WhatsApp, voice fallback) is first in the phone provider order, so DageSMS stays unused.
+      ZOHO_CPAAS_API_URL: http://mock:8025/zoho/v1.1
+      ZOHO_WA_TOKEN: "Zoho-enczapikey test-wa-key"
+      ZOHO_WA_FROM: "+234 901 000 0000"
+      ZOHO_WA_TEMPLATE: d0109d00-b191-11f1-95b1-aaa8828ce996
+      ZOHO_VOICE_TOKEN: test-voice-key
+      ZOHO_VOICE_FROM: "+14155550142"
       DAGESMS_API_KEY: test-key
       DAGESMS_BASE_URL: http://mock:8025/dagesms
       OTP_IP_LIMIT_PER_HOUR: "40"
+      OTP_PHONE_LIMIT_PER_DAY: "5"
+      # Re-issue the session cookie on every authenticated request so the rolling-refresh test can see it.
+      SESSION_REFRESH_MS: "0"
     depends_on:
       mock:
         condition: service_started

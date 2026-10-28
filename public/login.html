@@ -57,14 +57,31 @@
     <!-- Step 1: email or phone -->
     <form class="card narrow step" id="s-id" novalidate>
       <h1 id="id-title">Join the movement</h1>
-      <p class="sub" id="id-sub">Enter your email or phone number. We'll send you a 6-digit code to confirm it's you.</p>
-      <div class="field" data-field="identifier">
-        <label for="identifier">Email or phone number</label>
-        <input id="identifier" type="text" autocomplete="username" autocapitalize="off" spellcheck="false"
-               placeholder="you@example.com or 0803 123 4567">
-        <div class="err"></div>
+      <p class="sub" id="id-sub">Use your email or your phone number. We'll send you a 6-digit code to confirm it's you.</p>
+      <div class="seg" role="tablist" aria-label="Sign in with">
+        <button type="button" role="tab" id="tab-email" aria-controls="p-email" aria-selected="true">Email</button>
+        <button type="button" role="tab" id="tab-phone" aria-controls="p-phone" aria-selected="false" tabindex="-1">Phone</button>
       </div>
-      <p class="id-hint" id="hint" hidden></p>
+      <div role="tabpanel" id="p-email" aria-labelledby="tab-email">
+        <div class="field" data-field="email">
+          <label for="email">Email address</label>
+          <input id="email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false"
+                 placeholder="you@example.com" aria-describedby="email-err">
+          <div class="err" id="email-err"></div>
+        </div>
+      </div>
+      <div role="tabpanel" id="p-phone" aria-labelledby="tab-phone" hidden>
+        <div class="field" data-field="phone">
+          <label for="phone">Phone number</label>
+          <div class="tel">
+            <span class="tel-cc" aria-hidden="true">🇳🇬 +234</span>
+            <input id="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="0803 123 4567"
+                   aria-describedby="phone-hint phone-err">
+          </div>
+          <div class="err" id="phone-err"></div>
+        </div>
+        <p class="id-hint" id="phone-hint">Nigerian mobile numbers, e.g. 0803 123 4567.</p>
+      </div>
       <div class="consents" data-field="consent">
         <label class="check"><input type="checkbox" id="agree">
           <span>I agree to join the PBAT Door to Door Movement and to the <a href="/privacy" target="_blank">Privacy Policy</a> and <a href="/terms" target="_blank">Terms</a>.</span></label>
@@ -74,7 +91,7 @@
       </div>
       <div id="turnstile" class="turnstile" hidden></div>
       <button class="btn block" id="send" type="submit" style="margin-top:16px"><span class="spinner"></span><span>Continue</span></button>
-      <div class="msg err" id="id-err"></div>
+      <div class="msg err" id="id-err" role="alert"></div>
       <div id="recaptcha"></div>
       <p class="switch" style="font-size:13px">No password needed. You'll stay logged in on this device until you log out.</p>
       <p class="switch" id="mode-switch"></p>
@@ -83,15 +100,16 @@
     <!-- Step 2: code -->
     <form class="card narrow step" id="s-code" novalidate>
       <h1>Enter your code</h1>
-      <p class="sub" id="sent-msg"></p>
+      <p class="sub" id="sent-msg" aria-live="polite"></p>
       <div class="otp" id="otp" role="group" aria-label="6-digit code"></div>
       <button class="btn block" id="verify" type="submit" style="margin-top:16px"><span class="spinner"></span><span>Continue</span></button>
-      <div class="msg err" id="code-err"></div>
+      <div class="msg err" id="code-err" role="alert"></div>
       <div class="msg dev" id="dev-note"></div>
       <div class="row">
         <button type="button" class="linkish" id="back">← Use a different email or number</button>
         <button type="button" class="linkish" id="resend" disabled>Resend code</button>
       </div>
+      <p class="switch" id="call-row" hidden style="font-size:14px">No WhatsApp on this number? <button type="button" class="linkish" id="call">Call me with the code</button></p>
     </form>
 
     <!-- Step 3 (only for someone new who came in through "Log in"): agree before the account is made -->
@@ -109,30 +127,69 @@
 <footer class="site" id="site-footer"></footer>
 
 <script type="module">
-  import { $, api, setLoading, message, devCodeNote, showStep, createOtp, cooldown, mountNav, mountFooter } from '/app.js';
+  import { $, api, fetchMe, setLoading, message, devCodeNote, showStep, createOtp, cooldown, mountNav, mountFooter, sentText } from '/app.js';
+  import { normalizePhone, isEmail } from '/validate.js';
 
-  let identifier = '';
-  const me = await api('/api/me');
-  if (me.ok) location.replace('/account');
+  let identifier = '', lastVia = '';
+  const me = await fetchMe();
+  if (me.ok) { location.replace('/account'); await new Promise(() => {}); }
   mountNav({ member: null, page: 'login' }); mountFooter();
 
   const { data: opts } = await api('/api/options');
-  if (!opts.sms) {
-    $('#hint').hidden = false;
-    $('#hint').textContent = 'Sign-in by phone is coming soon. Please use your email for now.';
-    $('label[for="identifier"]').textContent = 'Email address';
-    $('#identifier').placeholder = 'you@example.com';
+  const channels = opts.phoneChannels || [];
+  const canCall = opts.phoneVia !== 'firebase' && channels.includes('voice');
+
+  // ---- Email | Phone tabs ----
+  const tabs = [$('#tab-email'), $('#tab-phone')];
+  let mode = 'email';
+  function selectTab(which, focus = false) {
+    mode = which;
+    for (const t of tabs) {
+      const on = t.id === `tab-${which}`;
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;
+      $(`#${t.getAttribute('aria-controls')}`).hidden = !on;
+    }
+    message($('#id-err'), '');
+    try { localStorage.setItem('pbat-login-tab', which); } catch {}
+    if (focus) $(`#${which}`).focus();
+    syncButtons();
   }
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => selectTab(t.id.slice(4), true));
+    t.addEventListener('keydown', (e) => {
+      const step = { ArrowRight: 1, ArrowLeft: -1, Home: -i, End: tabs.length - 1 - i }[e.key];
+      if (step === undefined) return;
+      e.preventDefault();
+      const next = tabs[(i + step + tabs.length) % tabs.length];
+      selectTab(next.id.slice(4)); next.focus();
+    });
+  });
+
+  if (!opts.sms) {
+    $('#phone').disabled = true;
+    $('#phone-hint').textContent = 'Sign-in by phone is coming soon. Please use your email for now.';
+  } else {
+    const how = opts.phoneVia === 'firebase' ? 'sms' : channels[0];
+    $('#phone-hint').textContent = ({
+      whatsapp: `We'll send your code on WhatsApp${canCall ? ', or call you with it if you prefer' : ''}.`,
+      voice: "We'll call you and read out your code.",
+    }[how] || "We'll text you a 6-digit code.") + ' Nigerian mobile numbers, e.g. 0803 123 4567.';
+  }
+
   // /join shows the tick boxes straight away. /login doesn't: members already agreed when they joined.
   const joining = /^\/(join|signup)/.test(location.pathname);
   $('#id-title').textContent = joining ? 'Join the movement' : 'Log in';
   $('#id-sub').textContent = joining
-    ? "Enter your email or phone number. We'll send you a 6-digit code to confirm it's you."
-    : "Enter the email or phone number you joined with. We'll send you a 6-digit code.";
+    ? "Use your email or your phone number. We'll send you a 6-digit code to confirm it's you."
+    : "Use the email or phone number you joined with. We'll send you a 6-digit code.";
   $('#mode-switch').innerHTML = joining ? 'Already a member? <a href="/login">Log in</a>' : 'New here? <a href="/join">Join the movement</a>';
   document.title = (joining ? 'Join' : 'Log in') + document.title.replace(/^[^·]*/, ' ');
   if (!joining) $('#agree-slot').append($('[data-field="consent"]'));
-  showStep('s-id'); $('#identifier').focus();
+  let saved = 'email';
+  try { saved = localStorage.getItem('pbat-login-tab') || 'email'; } catch {}
+  selectTab(saved === 'phone' && opts.sms ? 'phone' : 'email');
+  showStep('s-id'); $(`#${mode}`).focus();
 
   // ---- Consent (required) and SMS opt-in (optional), sent with every sign-in step ----
   const consent = () => ({ consent: $('#agree').checked, sms: $('#sms-optin').checked });
@@ -143,15 +200,15 @@
     if (!ok) $('#agree').focus();
     return ok;
   };
-  // Buttons look switched off until they can be used: Continue needs an email/phone typed in (and, on /join,
-  // the box ticked); "Join the movement" needs the box ticked. Tapping one anyway explains what's missing.
+  const typedIn = () => $('#email').value.trim() !== '' || $('#phone').value.trim() !== '';
   const syncButtons = () => {
-    const agreed = $('#agree').checked, typed = $('#identifier').value.trim() !== '';
-    $('#join').setAttribute('aria-disabled', String(!agreed));
-    $('#send').setAttribute('aria-disabled', String(!typed || (joining && !agreed)));
+    const on = $('#agree').checked, typed = typedIn();
+    $('#join').setAttribute('aria-disabled', String(!on));
+    $('#send').setAttribute('aria-disabled', String(!typed || (joining && !on)));
   };
   $('#agree').addEventListener('change', () => { $('[data-field="consent"]').classList.remove('invalid'); syncButtons(); });
-  $('#identifier').addEventListener('input', syncButtons);
+  $('#email').addEventListener('input', syncButtons);
+  $('#phone').addEventListener('input', syncButtons);
   syncButtons();
 
   // ---- Optional Cloudflare Turnstile bot check (only when the site has keys set) ----
@@ -166,8 +223,7 @@
   const tsReset = () => { if (tsWidget != null) window.turnstile.reset(tsWidget); };
 
   // ---- Phone codes through Google Firebase (when the server says so) ----
-  const useFirebase = (id) => opts.phoneVia === 'firebase' && !id.includes('@');
-  const toE164 = (v) => { const d = v.replace(/[^\d]/g, ''); return d.startsWith('234') ? `+${d}` : `+234${d.replace(/^0/, '')}`; };
+  const useFirebase = () => opts.phoneVia === 'firebase' && !identifier.includes('@');
   const maskPhone = (p) => p.replace(/^(\+234)(\d{3})\d{4}(\d{3})$/, '$1 $2 ••• •$3');
   let fb = null, confirmation = null, verifier = null;
   async function firebase() {
@@ -198,21 +254,20 @@
     try {
       const f = await firebase();
       if (!verifier) {
-        // A fresh element every time: reCAPTCHA refuses to render twice into the same one.
         const box = document.createElement('div');
         $('#recaptcha').replaceChildren(box);
         verifier = new f.RecaptchaVerifier(f.auth, box, { size: 'invisible' });
       }
-      const phone = toE164(identifier);
       try {
-        confirmation = await f.signInWithPhoneNumber(f.auth, phone, verifier);
+        confirmation = await f.signInWithPhoneNumber(f.auth, identifier, verifier);
       } catch (err) {
         try { verifier.clear(); } catch {}
-        verifier = null;            // start clean on the next try
+        verifier = null;
         throw err;
       }
-      $('#sent-msg').textContent = `We sent a 6-digit code by text message to ${maskPhone(phone)}. Use it within a few minutes.`;
+      $('#sent-msg').textContent = `Code sent by text message to ${maskPhone(identifier)}. Use it within a few minutes.`;
       message($('#dev-note'), '');
+      $('#call-row').hidden = true;
       cooldown($('#resend'), 60);
       return {};
     } catch (e) {
@@ -225,7 +280,7 @@
       const cred = await confirmation.confirm(code);
       const idToken = await cred.user.getIdToken();
       const res = await api('/api/auth/firebase', { idToken, ...consent() });
-      try { await fb.signOut(fb.auth); } catch {}   // our own session takes over from here
+      try { await fb.signOut(fb.auth); } catch {}
       return res;
     } catch (e) {
       const expired = e?.code === 'auth/code-expired' || e?.code === 'auth/session-expired';
@@ -234,30 +289,48 @@
     }
   }
 
-  async function send() {
-    if (useFirebase(identifier)) return sendFirebase();
-    const { ok, data } = await api('/api/auth/start', { identifier, ...consent(), turnstile: tsToken() });
+  const CALL_LABEL = 'Call me with the code';
+  function startCooldown(seconds) {
+    cooldown($('#resend'), seconds);
+    cooldown($('#call'), seconds, CALL_LABEL, (s) => `${CALL_LABEL} (in ${s}s)`);
+  }
+  async function send(channel) {
+    if (useFirebase()) return sendFirebase();
+    const { ok, data } = await api('/api/auth/start', { identifier, ...consent(), turnstile: tsToken(), ...(channel ? { channel } : {}) });
     tsReset();
     if (!ok) {
-      if (data.retryAfter) cooldown($('#resend'), data.retryAfter);
+      if (data.retryAfter) startCooldown(data.retryAfter);
       return { error: data.error || 'Something went wrong.', retry: Boolean(data.retryAfter) };
     }
-    const how = { email: 'email', sms: 'text message', whatsapp: 'WhatsApp' }[data.via] || 'text message';
-    $('#sent-msg').textContent = `We sent a 6-digit code by ${how} to ${data.sentTo}. ${data.expiresMinutes ? `It expires in ${data.expiresMinutes} minutes.` : 'Use it within a few minutes.'}`;
+    lastVia = data.via;
+    $('#sent-msg').textContent = sentText(data);
     devCodeNote($('#dev-note'), data.devCode);
-    cooldown($('#resend'), data.cooldown);
+    $('#call-row').hidden = !(data.type === 'phone' && canCall && data.via !== 'voice');
+    startCooldown(data.cooldown);
     return {};
   }
 
   $('#s-id').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const value = $('#identifier').value.trim();
-    const field = $('[data-field="identifier"]');
-    const bad = !value
-      || (value.includes('@') ? !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value) : !/^(\+?234|0)[789]\d{9}$/.test(value.replace(/[\s\-()]/g, '')));
-    field.classList.toggle('invalid', bad);
-    $('.err', field).textContent = bad ? (value.includes('@') || !opts.sms ? 'Enter a valid email address.' : 'Enter a valid email or Nigerian phone number, e.g. 0803 123 4567.') : '';
-    if (bad) return $('#identifier').focus();
+    let raw = $(`#${mode}`).value.trim();
+    if (mode === 'email' && opts.sms && !raw.includes('@') && normalizePhone(raw)) {
+      selectTab('phone'); $('#phone').value = raw;
+    }
+    raw = $(`#${mode}`).value.trim();
+    let value = null, err = '';
+    if (mode === 'email') {
+      value = raw.toLowerCase();
+      if (!isEmail(value)) err = 'Enter a valid email address, e.g. you@example.com.';
+    } else if (!opts.sms) {
+      err = 'Sign-in by phone is coming soon. Please use your email for now.';
+    } else if (!(value = normalizePhone(raw))) {
+      err = 'Enter a valid Nigerian mobile number, e.g. 0803 123 4567.';
+    }
+    const field = $(`[data-field="${mode}"]`), input = $(`#${mode}`);
+    field.classList.toggle('invalid', Boolean(err));
+    input.setAttribute('aria-invalid', String(Boolean(err)));
+    $('.err', field).textContent = err;
+    if (err) return input.focus();
     if (joining && !agreed()) return;
 
     identifier = value; message($('#id-err'), '');
@@ -276,7 +349,7 @@
     if (code.length !== 6) return message($('#code-err'), 'Enter all 6 digits.');
     const btn = $('#verify'); if (btn.disabled) return;
     setLoading(btn, true);
-    const { ok, data } = useFirebase(identifier) && confirmation ? await verifyFirebase(code) : await api('/api/auth/verify', { identifier, code, ...consent() });
+    const { ok, data } = useFirebase() && confirmation ? await verifyFirebase(code) : await api('/api/auth/verify', { identifier, code, ...consent() });
     setLoading(btn, false);
     if (!ok) {
       otp.shake(); otp.clear();
@@ -284,7 +357,7 @@
       if (data.expired) { clearInterval($('#resend')._timer); $('#resend').disabled = false; $('#resend').textContent = 'Send a new code'; }
       return;
     }
-    if (data.needsConsent) {               // new person on the Log in page: ask them to agree first
+    if (data.needsConsent) {
       pending = data.pending;
       $('#new-who').textContent = identifier; message($('#agree-err'), '');
       return showStep('s-agree');
@@ -302,16 +375,22 @@
     if (!ok) return message($('#agree-err'), data.error || 'Something went wrong.');
     location.href = data.isNew ? '/account?welcome=1' : '/account';
   });
-  $('#back2').addEventListener('click', () => { showStep('s-id'); $('#identifier').focus(); });
+  $('#back2').addEventListener('click', () => { showStep('s-id'); $(`#${mode}`).focus(); });
 
-  $('#resend').addEventListener('click', async () => {
-    $('#resend').disabled = true; message($('#code-err'), '');
-    const { error } = await send();
+  async function resend(channel) {
+    $('#resend').disabled = true; $('#call').disabled = true; message($('#code-err'), '');
+    const { error } = await send(channel);
     if (error) return message($('#code-err'), error);
-    message($('#code-err'), 'A new code is on its way.', 'ok'); otp.clear();
-  });
+    message($('#code-err'), channel === 'voice' || lastVia === 'voice' ? 'Calling you now. Answer to hear your code.' : 'A new code is on its way.', 'ok');
+    otp.clear();
+  }
+  $('#resend').addEventListener('click', () => resend(lastVia === 'voice' ? 'voice' : undefined));
+  $('#call').addEventListener('click', () => resend('voice'));
 
-  $('#back').addEventListener('click', () => { clearInterval($('#resend')._timer); showStep('s-id'); $('#identifier').focus(); });
+  $('#back').addEventListener('click', () => {
+    clearInterval($('#resend')._timer); clearInterval($('#call')._timer);
+    showStep('s-id'); $(`#${mode}`).focus();
+  });
 </script>
 </body>
 </html>
