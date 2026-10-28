@@ -275,8 +275,8 @@ if (PHASE === 'main') {
 
     const r = await devB.post('/api/auth/join', { pending: need.data.pending, consent: true });
     assert.equal(r.status, 200, r.text);
-    assert.equal(r.isNew, true);
-    assert.equal(r.member.phone, toE164(phoneB));
+    assert.equal(r.data.isNew, true);
+    assert.equal(r.data.member.phone, toE164(phoneB));
     const saved = await devB.post('/api/me', { ...PROFILE, full_name: 'Bayo Test', occupation: 'Trader', email: '' });
     assert.equal(saved.status, 200, saved.text);
   });
