@@ -87,8 +87,9 @@ async function firebaseToken(phone) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ phone: phone.startsWith('+') ? phone : toE164(phone) }),
   });
-  assert.equal(r.status, 200, await r.text());
-  return (await r.json()).idToken;
+  const text = await r.text();
+  assert.equal(r.status, 200, text);
+  return JSON.parse(text).idToken;
 }
 
 async function signInPhone(c, phone, { consent = true } = {}) {
