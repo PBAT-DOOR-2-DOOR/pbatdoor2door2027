@@ -5,6 +5,7 @@ The volunteer website for the PBAT DOOR TO DOOR movement, served at **https://pb
 - **Landing page** (`/`): the movement and its Founder & Convener, Tompolo; the President's photo, a short bio timeline, and the administration's works, each linked to its source.
 - **Join or log in** (`/login`; `/join` and `/signup` redirect here): type an email **or** a Nigerian phone number, then the 6-digit code. The first sign-in creates the account.
 - **My account** (`/account`; `/welcome` redirects here): "Complete your profile" (full name, state and LGA required; the rest optional), edit details, link a second email or phone (which merges duplicate accounts), see signed-in devices, log out of one or all devices. Sessions last until the member logs out.
+- **Volunteer area** (`/volunteer`): My Ward, log door-to-door visits, pledges, leaderboard and doorstep toolkit. Works offline (service worker + queued visits). Coordinators use `/coordinator`.
 - **Polling units**: state → LGA → ward → polling unit lists from INEC data (176,846 units) in `public/geo/`, plus **"near me"**, which suggests the closest units from the phone's GPS (`/api/geo/near`).
 
 It runs as three containers on one server: **Caddy** (HTTPS), the **Node.js app**, and **PostgreSQL**, plus a small **backup** container.
@@ -337,6 +338,7 @@ All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit
 | `TERMII_API_KEY`, `TERMII_SENDER_ID`, `TERMII_CHANNEL`, `TERMII_BASE_URL` | Termii. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Twilio. |
 | `OTP_IP_LIMIT_PER_HOUR` | Codes per visitor IP per hour (default 10). |
+| `NATIONAL_ADMINS` | Comma-separated verified emails/phones who can see every state and appoint coordinators. |
 | `CSP_MODE` | `enforce` (default), `report-only`, or `off`. |
 | `TRUST_PROXY` | Proxy hops in front of the app (default 1 = Caddy). Don't change. |
 | `LOG_LEVEL` | `info` (default), `debug`, `warn`… |
@@ -396,6 +398,7 @@ The stack is the same: Node.js 22 LTS, Express 4, plain HTML/CSS/JS, and all rou
 | **Grid index for "near me"** instead of scanning all 163,000 units per request. | Same results (tested), a fraction of the CPU. |
 | **Structured JSON logging** (pino) without cookies, codes or GPS query strings; capped Docker log files. | Searchable logs without leaking personal data, and no full disk. |
 | **Graceful shutdown**, `/healthz` (alive) and `/readyz` (database reachable), Docker health checks, keep-alive tuned against the proxy. | Zero-error restarts and deploys, automatic recovery, no sporadic 502s. |
+| **Volunteer area** (visits, pledges, coordinator roles) stored in Postgres (`migrations/004_volunteer_area.sql`). Offline logging uses a unique `client_id` so a retry does not double-count. | Campaign fieldwork on poor networks; coordinators export CSV for their state only. |
 | **Docker hardening**: multi-stage image, runs as non-root with a read-only filesystem, no capabilities; Postgres not reachable from outside; the app port only on localhost. | Smaller attack surface. |
 | **ZeptoMail** email provider added; overridable provider URLs (used by the tests). | ZeptoMail fits the domain's Zoho setup. |
 | **Nodemailer 6 → 10**. | Version 6 has published security advisories. |

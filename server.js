@@ -16,6 +16,7 @@ import { loadGeoIndex, nearest } from './geo.js';
 import { securityHeaders } from './security.js';
 import { staticFiles } from './static.js';
 import { validateProfile, parseIdentifier, normalizePhone, isEmail, STATES, GENDERS, INTERESTS } from './validate.js';
+import { mountVolunteer, createRoleOf } from './volunteer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -41,6 +42,7 @@ const pool = createPool();
 await waitForDatabase(pool);
 if (process.env.MIGRATE_ON_START !== 'false') await migrate(pool);
 const store = createStore(pool);
+const roleOf = createRoleOf(store, normalizePhone);
 const mailer = createMailer();
 const sms = createSms();
 // Phone sign-in works in development (codes go to the log) and in production once an SMS provider is set.
@@ -118,6 +120,14 @@ const publicMember = (m) => {
   out.interests = m.interests ? m.interests.split(', ') : [];
   return out;
 };
+
+async function memberJson(m) {
+  const out = publicMember(m);
+  const r = await roleOf(m);
+  out.role = r.role;
+  out.roleState = r.state;
+  return out;
+}
 
 // ---- App --------------------------------------------------------------------
 const app = express();
@@ -307,7 +317,7 @@ async function startSession(req, res, member, isNew) {
   const token = crypto.randomBytes(32).toString('base64url');
   await store.insertSession(sha256(token), member.id, now, String(req.get('user-agent') || '').slice(0, 200));
   setSessionCookie(res, token);
-  res.json({ member: publicMember(member), isNew, needsProfile: !member.consent_at });
+  res.json({ member: await memberJson(member), isNew, needsProfile: !member.consent_at });
 }
 
 /**
@@ -377,7 +387,7 @@ app.get('/api/me', h(async (req, res) => {
     userAgent: s.user_agent,
     current: s.token_hash === req.sessionHash,
   }));
-  res.json({ member: publicMember(req.member), sessions });
+  res.json({ member: await memberJson(req.member), sessions });
 }));
 
 // Save my details (first time after sign-in, and later edits).
@@ -417,7 +427,7 @@ app.post('/api/me', h(async (req, res) => {
   }
 
   await store.updateProfile(m.id, profile, Date.now());
-  res.json({ member: publicMember(await store.memberById(m.id)) });
+  res.json({ member: await memberJson(await store.memberById(m.id)) });
 }));
 
 // ---- Linking a second email/phone to my account ------------------------------
@@ -428,7 +438,7 @@ async function finishLink(res, m, type, value) {
   if (r.conflict) {
     return res.status(409).json({ error: `That ${type === 'email' ? 'email' : 'number'} belongs to an account that already has a different ${type === 'email' ? 'phone number' : 'email'}. Log in with it instead, or contact the team to merge.` });
   }
-  res.json({ member: publicMember(await store.memberById(r.memberId)), merged: r.merged });
+  res.json({ member: await memberJson(await store.memberById(r.memberId)), merged: r.merged });
 }
 const linkKey = (m, id) => `link:${m.id}:${id.value}`;
 
@@ -495,6 +505,8 @@ app.get('/api/geo/near', (req, res) => {
   }
   res.set('Cache-Control', 'no-store').json({ results: geo.size ? nearest(geo, lat, lng) : [] });
 });
+
+mountVolunteer(app, { store, h, normalizePhone, STATES, roleOf });
 
 // Unknown API routes get JSON, not the static 404 page.
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));

@@ -63,11 +63,72 @@ const QUERIES = {
   countHits: 'SELECT count(*)::int AS n FROM rate_limit_hits WHERE bucket = $1 AND hit_at > $2',
   insertHit: 'INSERT INTO rate_limit_hits (bucket, hit_at) VALUES ($1, $2)',
   purgeHits: 'DELETE FROM rate_limit_hits WHERE hit_at < $1',
+
+  // Volunteer area: visits and pledges copied onto the keeper when two accounts merge.
+  moveVisits: `UPDATE visits SET member_id = $2 WHERE member_id = $1
+               AND NOT EXISTS (SELECT 1 FROM visits v2 WHERE v2.client_id = visits.client_id AND v2.member_id = $2)`,
+  movePledges: `UPDATE pledges SET member_id = $2 WHERE member_id = $1
+                AND NOT EXISTS (SELECT 1 FROM pledges p2 WHERE p2.client_id = pledges.client_id AND p2.member_id = $2)`,
+  moveRole: `UPDATE roles SET member_id = $2 WHERE member_id = $1
+             AND NOT EXISTS (SELECT 1 FROM roles r2 WHERE r2.member_id = $2)`,
+
+  insertVisit: `INSERT INTO visits (member_id, client_id, visit_date, households, people, area, notes, state, lga, ward, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (client_id) DO NOTHING`,
+  insertPledge: `INSERT INTO pledges (member_id, client_id, full_name, phone, polling_unit, note, consent_at, state, lga, ward, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (client_id) DO NOTHING`,
+  myVisits: `SELECT client_id, visit_date, households, people, area, notes, created_at FROM visits
+             WHERE member_id = $1 ORDER BY visit_date DESC, created_at DESC LIMIT 20`,
+  myPledges: `SELECT client_id, full_name, polling_unit, created_at FROM pledges WHERE member_id = $1 ORDER BY created_at DESC LIMIT 20`,
+  myTotals: `SELECT (SELECT COUNT(*)::int FROM visits WHERE member_id = $1) AS visits,
+                    (SELECT COALESCE(SUM(households), 0)::int FROM visits WHERE member_id = $1) AS households,
+                    (SELECT COALESCE(SUM(people), 0)::int FROM visits WHERE member_id = $1) AS people,
+                    (SELECT COUNT(*)::int FROM pledges WHERE member_id = $1) AS pledges`,
+  areaCounts: `SELECT
+      (SELECT COUNT(*)::int FROM members WHERE consent_at IS NOT NULL AND state = $1 AND lga = $2 AND ward = $3 AND polling_unit = $4 AND polling_unit <> '') AS pu_count,
+      (SELECT COUNT(*)::int FROM members WHERE consent_at IS NOT NULL AND state = $1 AND lga = $2 AND ward = $3 AND ward <> '') AS ward_count,
+      (SELECT COUNT(*)::int FROM members WHERE consent_at IS NOT NULL AND state = $1 AND lga = $2 AND lga <> '') AS lga_count,
+      (SELECT COUNT(*)::int FROM members WHERE consent_at IS NOT NULL AND state = $1 AND state <> '') AS state_count`,
+  wardActivity: `SELECT COALESCE(SUM(households), 0)::int AS households, COUNT(*)::int AS visits FROM visits
+                 WHERE state = $1 AND lga = $2 AND ward = $3 AND created_at >= $4`,
+  wardPledges: 'SELECT COUNT(*)::int AS pledges FROM pledges WHERE state = $1 AND lga = $2 AND ward = $3',
+  stateCoordinators: `SELECT m.full_name FROM roles r JOIN members m ON m.id = r.member_id
+                      WHERE r.role = 'state' AND r.state = $1 ORDER BY m.full_name`,
+  topVolunteers: `SELECT m.id, m.full_name, m.state, m.ward, SUM(v.households)::int AS households, COUNT(*)::int AS visits
+                  FROM visits v JOIN members m ON m.id = v.member_id
+                  WHERE v.created_at >= $1 AND ($2 = '' OR v.state = $2) AND ($3 = '' OR v.lga = $3) AND ($4 = '' OR v.ward = $4)
+                  GROUP BY m.id, m.full_name, m.state, m.ward ORDER BY households DESC, visits DESC LIMIT 20`,
+  topStates: `SELECT state, SUM(households)::int AS households, COUNT(*)::int AS visits, COUNT(DISTINCT member_id)::int AS volunteers
+              FROM visits WHERE created_at >= $1 AND state <> '' GROUP BY state ORDER BY households DESC LIMIT 37`,
+
+  getRole: 'SELECT member_id, role, state FROM roles WHERE member_id = $1',
+  setRole: `INSERT INTO roles (member_id, role, state, assigned_by, assigned_at) VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (member_id) DO UPDATE SET role = EXCLUDED.role, state = EXCLUDED.state,
+              assigned_by = EXCLUDED.assigned_by, assigned_at = EXCLUDED.assigned_at`,
+  deleteRole: 'DELETE FROM roles WHERE member_id = $1',
+  listRoles: `SELECT r.member_id, r.role, r.state, r.assigned_at, m.full_name, m.email, m.phone FROM roles r
+              JOIN members m ON m.id = r.member_id ORDER BY r.role, r.state, m.full_name`,
+  coordVolunteers: `SELECT m.id, m.full_name, m.email, m.phone, m.gender, m.state, m.lga, m.ward, m.polling_unit, m.occupation,
+                      m.interests, m.sms_consent_at, m.created_at,
+                      (SELECT COUNT(*)::int FROM visits v WHERE v.member_id = m.id) AS visits,
+                      (SELECT COALESCE(SUM(households), 0)::int FROM visits v WHERE v.member_id = m.id) AS households,
+                      (SELECT COUNT(*)::int FROM pledges p WHERE p.member_id = m.id) AS pledges
+                    FROM members m WHERE m.consent_at IS NOT NULL AND ($1 = '' OR m.state = $1)
+                    ORDER BY m.state, m.lga, m.ward, m.full_name LIMIT 5000`,
+  coordPledges: `SELECT p.full_name, p.phone, p.polling_unit, p.note, p.state, p.lga, p.ward, p.created_at, m.full_name AS volunteer
+                 FROM pledges p JOIN members m ON m.id = p.member_id WHERE ($1 = '' OR p.state = $1)
+                 ORDER BY p.created_at DESC LIMIT 5000`,
+  coordByLgaMembers: `SELECT lga, COUNT(*)::int AS volunteers FROM members WHERE consent_at IS NOT NULL AND ($1 = '' OR state = $1)
+                      GROUP BY lga`,
+  coordByLgaVisits: `SELECT lga, COUNT(*)::int AS visits, COALESCE(SUM(households), 0)::int AS households FROM visits
+                     WHERE ($1 = '' OR state = $1) AND created_at >= $2 GROUP BY lga`,
+  coordByLgaPledges: `SELECT lga, COUNT(*)::int AS pledges FROM pledges WHERE ($1 = '' OR state = $1) GROUP BY lga`,
 };
 
 // BIGINT comes back from pg as a string; turn numeric columns back into numbers.
 const NUMERIC = new Set(['id', 'member_id', 'created_at', 'expires_at', 'sent_at', 'last_seen', 'attempts',
-  'consent_at', 'join_consent_at', 'sms_consent_at', 'email_verified', 'phone_verified']);
+  'consent_at', 'join_consent_at', 'sms_consent_at', 'email_verified', 'phone_verified',
+  'visits', 'households', 'people', 'pledges', 'volunteers', 'pu_count', 'ward_count', 'lga_count',
+  'state_count', 'assigned_at', 'assigned_by']);
 const fixRow = (r) => {
   for (const k of Object.keys(r)) if (NUMERIC.has(k) && r[k] != null) r[k] = Number(r[k]);
   return r;
@@ -179,6 +240,9 @@ export function createStore(pool) {
       const joinConsents = [keep.join_consent_at, drop.join_consent_at].filter((x) => x != null);
       const smsConsents = [keep.sms_consent_at, drop.sms_consent_at].filter((x) => x != null);
       await q('moveSessions', [drop.id, keep.id], c);
+      await q('moveVisits', [drop.id, keep.id], c);
+      await q('movePledges', [drop.id, keep.id], c);
+      await q('moveRole', [drop.id, keep.id], c);
       await q('deleteMember', [drop.id], c);                    // frees its verified contacts for the keeper
       await q('mergeInto', [keep.id, email[0], email[1], phone[0], phone[1],
         ...PROFILE_FIELDS.map((f) => keep[f] || drop[f] || ''),
@@ -200,5 +264,36 @@ export function createStore(pool) {
     listSessions: (memberId) => q('listSessions', [memberId]),
     deleteSession: (hash) => q('deleteSession', [hash]),
     deleteMemberSessions: (memberId) => q('deleteMemberSessions', [memberId]),
+
+    insertVisit: (m, v, now) => q('insertVisit', [m.id, v.clientId, v.date, v.households, v.people, v.area, v.notes,
+      m.state || '', m.lga || '', m.ward || '', now]),
+    insertPledge: (m, p, now) => q('insertPledge', [m.id, p.clientId, p.name, p.phone, p.pollingUnit, p.note, now,
+      m.state || '', m.lga || '', m.ward || '', now]),
+    myVisits: (id) => q('myVisits', [id]),
+    myPledges: (id) => q('myPledges', [id]),
+    myTotals: (id) => one('myTotals', [id]),
+    areaCounts: (m) => one('areaCounts', [m.state || '', m.lga || '', m.ward || '', m.polling_unit || '']),
+    wardActivity: (m, since) => one('wardActivity', [m.state || '', m.lga || '', m.ward || '', since]),
+    wardPledges: (m) => one('wardPledges', [m.state || '', m.lga || '', m.ward || '']),
+    stateCoordinators: (state) => q('stateCoordinators', [state]),
+    topVolunteers: (since, state = '', lga = '', ward = '') => q('topVolunteers', [since, state, lga, ward]),
+    topStates: (since) => q('topStates', [since]),
+
+    getRole: (id) => one('getRole', [id]),
+    setRole: (id, role, state, by, now) => q('setRole', [id, role, state, by, now]),
+    deleteRole: (id) => q('deleteRole', [id]),
+    listRoles: () => q('listRoles'),
+    coordVolunteers: (state) => q('coordVolunteers', [state]),
+    coordPledges: (state) => q('coordPledges', [state]),
+    async coordByLga(state, since) {
+      const rows = new Map();
+      const add = (list) => list.forEach((r) => rows.set(r.lga, {
+        lga: r.lga, volunteers: 0, visits: 0, households: 0, pledges: 0, ...rows.get(r.lga), ...r,
+      }));
+      add(await q('coordByLgaMembers', [state]));
+      add(await q('coordByLgaVisits', [state, since]));
+      add(await q('coordByLgaPledges', [state]));
+      return [...rows.values()].sort((a, b) => b.volunteers - a.volunteers || String(a.lga).localeCompare(String(b.lga)));
+    },
   };
 }

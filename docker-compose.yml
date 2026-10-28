@@ -56,6 +56,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:-pbat-local-dev-only}
       DATABASE_SSL: disable
       TRUST_PROXY: ${TRUST_PROXY:-1}
+      NATIONAL_ADMINS: ${NATIONAL_ADMINS:-}
     depends_on:
       db:
         condition: service_healthy
