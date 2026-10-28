@@ -1,7 +1,7 @@
 // End-to-end tests against the running docker compose stack (see scripts/test-stack.sh).
 //   SITE        https://pbat.test        — through Caddy, like a visitor
 //   APP_URL     http://127.0.0.1:3000    — the app's loopback port (used to simulate other IPs)
-//   MOCK_URL    http://127.0.0.1:8025    — mock email/Zoho WhatsApp+voice/SMS provider that records the codes
+//   MOCK_URL    http://127.0.0.1:8025    — mock email provider + Firebase JWKS / ID-token mint
 //   PHASE       main | after-restart     — after-restart checks state survived a restart/restore
 //   STATE_FILE  where phase "main" leaves data for later phases
 import { test } from 'node:test';
@@ -19,10 +19,9 @@ const IP_LIMIT = Number(process.env.OTP_IP_LIMIT_PER_HOUR || 40);
 const PHONE_LIMIT = Number(process.env.OTP_PHONE_LIMIT_PER_DAY || 5);
 
 const rnd = () => crypto.randomBytes(4).toString('hex');
-// Numbers ending in 0000 are refused by the mock's WhatsApp (to test the voice fallback).
-const randomPhone = (suffix = '') => {
+const randomPhone = () => {
   const p = `080${String(crypto.randomInt(10_000_000, 99_999_999))}`;
-  return suffix ? p.slice(0, -suffix.length) + suffix : p.endsWith('0000') ? `${p.slice(0, -1)}1` : p;
+  return p.endsWith('0000') ? `${p.slice(0, -1)}1` : p;
 };
 const randomIp = () => `198.51.100.${crypto.randomInt(1, 254)}`;
 const toE164 = (p) => `+234${p.slice(1)}`;
@@ -46,8 +45,9 @@ function client(base = SITE, extraHeaders = {}) {
         },
         body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
       });
-      const set = res.headers.getSetCookie().find((h) => h.startsWith('sid='));
-      if (set) {
+      const sets = res.headers.getSetCookie().filter((h) => h.startsWith('sid='));
+      if (sets.length) {
+        const set = sets[sets.length - 1]; // last Set-Cookie for sid wins, as in a browser
         c.lastSetCookie = set;
         const v = set.slice(4, set.indexOf(';'));
         sid = v && !/Expires=Thu, 01 Jan 1970/i.test(set) ? v : null;
@@ -80,6 +80,21 @@ async function signIn(c, identifier, deliveredTo = identifier) {
   const verify = await c.post('/api/auth/verify', { identifier, code: await codeFor(deliveredTo), consent: true });
   assert.equal(verify.status, 200, verify.text);
   return verify.data;
+}
+
+async function firebaseToken(phone) {
+  const r = await fetch(`${MOCK_URL}/firebase/token`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone: phone.startsWith('+') ? phone : toE164(phone) }),
+  });
+  assert.equal(r.status, 200, await r.text());
+  return (await r.json()).idToken;
+}
+
+async function signInPhone(c, phone, { consent = true } = {}) {
+  const r = await c.post('/api/auth/firebase', { idToken: await firebaseToken(phone), consent });
+  assert.equal(r.status, 200, r.text);
+  return r.data;
 }
 
 const PROFILE = {
@@ -126,6 +141,9 @@ if (PHASE === 'main') {
     assert.match(csp, /default-src 'self'/);
     assert.match(csp, /script-src 'self' 'sha256-/);
     assert.match(csp, /frame-ancestors 'none'/);
+    assert.match(csp, /www\.gstatic\.com/, 'Firebase SDK origin');
+    assert.match(csp, /recaptcha\.google\.com/, 'Firebase reCAPTCHA frame');
+    assert.match(csp, /identitytoolkit\.googleapis\.com/, 'Firebase Auth API');
     assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/);
     assert.match(r.headers.get('strict-transport-security'), /max-age=31536000/);
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
@@ -149,10 +167,12 @@ if (PHASE === 'main') {
     const { data } = await client().get('/api/options');
     assert.equal(data.states.length, 37);
     assert.equal(data.sms, true);
-    assert.equal(data.phoneVia, 'server');
+    assert.equal(data.phoneVia, 'firebase', 'Firebase wins even when Zoho env vars are set');
     assert.equal(data.turnstile, null);
-    assert.deepEqual(data.phoneChannels, ['whatsapp', 'voice'], 'Zoho WhatsApp with a voice fallback');
-    assert.equal(data.firebase, null);
+    assert.deepEqual(data.phoneChannels, []);
+    assert.equal(data.firebase.projectId, 'pbat-test');
+    assert.equal(data.firebase.apiKey, 'test-firebase-key');
+    assert.match(data.firebase.sdk, /gstatic\.com\/firebasejs/);
   });
 
   test('API input checks', async () => {
@@ -242,22 +262,18 @@ if (PHASE === 'main') {
     assert.match(r.text, /export function normalizePhone/);
   });
 
-  test('phone sign-in through Zoho WhatsApp (local 080… format)', async () => {
-    const start = await devB.post('/api/auth/start', { identifier: phoneB });
-    assert.equal(start.status, 200, start.text);
-    assert.equal(start.data.type, 'phone');
-    assert.equal(start.data.via, 'whatsapp');
-    assert.equal(start.data.identifier, toE164(phoneB));
-    assert.equal(start.data.sentTo, `+234 ${phoneB.slice(1, 4)} ••• •${phoneB.slice(-3)}`);
-    assert.equal(start.data.devCode, undefined);
-    assert.equal((await delivered(toE164(phoneB))).channel, 'whatsapp');
+  test('phone sign-in through Firebase (local 080… format)', async () => {
+    assert.equal((await devB.post('/api/auth/start', { identifier: phoneB })).status, 400, 'server-side phone codes are off when Firebase is on');
+    assert.equal((await devB.post('/api/auth/firebase', { idToken: 'not-a-jwt' })).status, 401);
 
-    const again = await devB.post('/api/auth/start', { identifier: phoneB, channel: 'voice' });
-    assert.equal(again.status, 429, '"call me instead" shares the resend cooldown');
+    const need = await devB.post('/api/auth/firebase', { idToken: await firebaseToken(phoneB) });
+    assert.equal(need.status, 200, need.text);
+    assert.equal(need.data.needsConsent, true);
+    assert.ok(need.data.pending);
+    assert.equal(devB.sid, null, 'no session until the new person agrees');
 
-    const verify = await devB.post('/api/auth/verify', { identifier: phoneB, code: await codeFor(toE164(phoneB)) });
-    assert.equal(verify.status, 200, verify.text);
-    const r = verify.data;
+    const r = await devB.post('/api/auth/join', { pending: need.data.pending, consent: true });
+    assert.equal(r.status, 200, r.text);
     assert.equal(r.isNew, true);
     assert.equal(r.member.phone, toE164(phoneB));
     const saved = await devB.post('/api/me', { ...PROFILE, full_name: 'Bayo Test', occupation: 'Trader', email: '' });
@@ -268,12 +284,8 @@ if (PHASE === 'main') {
     const already = await devA1.post('/api/me/link/start', { identifier: `other-${rnd()}@example.com` });
     assert.equal(already.status, 400, 'account already has a verified email');
 
-    const start = await devA1.post('/api/me/link/start', { identifier: phoneB });
-    assert.equal(start.status, 200, start.text);
-    assert.equal(start.data.via, 'whatsapp');
-    const bad = await devA1.post('/api/me/link/verify', { identifier: phoneB, code: '12345' });
-    assert.equal(bad.status, 400);
-    const ok = await devA1.post('/api/me/link/verify', { identifier: phoneB, code: await codeFor(toE164(phoneB)) });
+    assert.equal((await devA1.post('/api/me/link/start', { identifier: phoneB })).status, 400, 'phone linking uses Firebase');
+    const ok = await devA1.post('/api/me/link/firebase', { idToken: await firebaseToken(phoneB) });
     assert.equal(ok.status, 200, ok.text);
     assert.equal(ok.data.merged, true);
     const m = ok.data.member;
@@ -286,52 +298,27 @@ if (PHASE === 'main') {
     const meB = await devB.get('/api/me');
     assert.equal(meB.status, 200);
     assert.equal(meB.data.member.email, emailA);
-    const viaPhone = await signIn(client(), phoneB, toE164(phoneB));
+    const viaPhone = await signInPhone(client(), phoneB);
     assert.equal(viaPhone.member.email, emailA);
     assert.equal((await devA1.get('/api/me')).data.sessions.length, 4);
   });
 
-  test('"call me instead": a voice call reads out the code', async () => {
-    const phone = randomPhone();
-    const start = await client().post('/api/auth/start', { identifier: `+234 ${phone.slice(1)}`, channel: 'voice' });
-    assert.equal(start.status, 200, start.text);
-    assert.equal(start.data.via, 'voice');
-    const d = await delivered(toE164(phone));
-    assert.equal(d.channel, 'voice');
-    const ok = await client().post('/api/auth/verify', { identifier: phone, code: d.code });
-    assert.equal(ok.status, 200, ok.text);
-  });
-
-  test('a number WhatsApp refuses falls back to a voice call; unknown channels are ignored', async () => {
-    const refused = randomPhone('0000');
-    const start = await client().post('/api/auth/start', { identifier: refused });
-    assert.equal(start.status, 200, start.text);
-    assert.equal(start.data.via, 'voice');
-    assert.equal((await delivered(toE164(refused))).channel, 'voice');
-
-    const other = randomPhone();
-    const odd = await client().post('/api/auth/start', { identifier: other, channel: 'carrier-pigeon' });
-    assert.equal(odd.status, 200, odd.text);
-    assert.equal(odd.data.via, 'whatsapp');
-  });
-
-  test('per-phone daily cap covers sign-in and linking, from any connection', async () => {
+  test('per-phone daily cap covers Firebase sign-in and linking, from any connection', async () => {
     const phone = randomPhone();
     for (let i = 0; i < PHONE_LIMIT; i++) {
-      const c = client(APP_URL, { 'X-Forwarded-For': randomIp() });   // a new connection each time
-      const start = await c.post('/api/auth/start', { identifier: phone });
-      assert.equal(start.status, 200, `code ${i + 1}: ${start.text}`);
-      const ok = await c.post('/api/auth/verify', { identifier: phone, code: await codeFor(toE164(phone)) });
-      assert.equal(ok.status, 200, ok.text);                          // a used code ends the cooldown
+      const c = client(APP_URL, { 'X-Forwarded-For': randomIp() });
+      const ok = await signInPhone(c, phone);
+      assert.equal(ok.member.phone, toE164(phone), `sign-in ${i + 1}`);
     }
-    const capped = await client(APP_URL, { 'X-Forwarded-For': randomIp() }).post('/api/auth/start', { identifier: phone });
+    const capped = await client(APP_URL, { 'X-Forwarded-For': randomIp() })
+      .post('/api/auth/firebase', { idToken: await firebaseToken(phone), consent: true });
     assert.equal(capped.status, 429);
     assert.equal(capped.data.dailyLimit, true);
     assert.match(capped.data.error, /too many codes today/);
 
     const linker = client(APP_URL, { 'X-Forwarded-For': randomIp() });
     await signIn(linker, `linker-${rnd()}@example.com`);
-    const link = await linker.post('/api/me/link/start', { identifier: phone });
+    const link = await linker.post('/api/me/link/firebase', { idToken: await firebaseToken(phone) });
     assert.equal(link.status, 429, 'linking shares the cap');
     assert.equal(link.data.dailyLimit, true);
 
@@ -432,7 +419,8 @@ if (PHASE === 'after-restart') {
   });
 
   test('the per-phone daily cap survives a restart', async () => {
-    const r = await client(APP_URL, { 'X-Forwarded-For': `192.0.2.${crypto.randomInt(1, 254)}` }).post('/api/auth/start', { identifier: state.cappedPhone });
+    const r = await client(APP_URL, { 'X-Forwarded-For': `192.0.2.${crypto.randomInt(1, 254)}` })
+      .post('/api/auth/firebase', { idToken: await firebaseToken(state.cappedPhone), consent: true });
     assert.equal(r.status, 429);
     assert.equal(r.data.dailyLimit, true);
   });

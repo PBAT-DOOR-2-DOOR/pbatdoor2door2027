@@ -29,8 +29,10 @@ export function sessionMiddleware({ store, hash, secure, refreshMs = REFRESH_MS,
       }
       req.member = member;
       req.sessionHash = s.token_hash;
+      // Logout must fully revoke: never re-issue sid on the same response as clearCookie.
+      const loggingOut = req.method === 'POST' && (req.path === '/auth/logout' || req.path === '/auth/logout-all');
       const t = now();
-      if (t - s.last_seen >= refreshMs) {
+      if (!loggingOut && t - s.last_seen >= refreshMs) {
         await store.touchSession(s.token_hash, t);
         res.cookie(COOKIE_NAME, token, cookieOptions(secure));
       }

@@ -1,9 +1,11 @@
-# Test overlay used by scripts/test-stack.sh: the production stack, but with email/SMS going to a
-# local mock and Caddy using its internal CA for the test domain (no Let's Encrypt).
+# Test overlay used by scripts/test-stack.sh: the production stack, but with email going to a
+# local mock, Firebase Phone Auth verifying mock JWTs, and Caddy using its internal CA.
 services:
   mock:
     image: node:22-alpine
     command: ["node", "/mock/mock-providers.js"]
+    environment:
+      FIREBASE_PROJECT_ID: pbat-test
     volumes:
       - ./deploy/test:/mock:ro
     ports:
@@ -14,7 +16,11 @@ services:
       BREVO_API_KEY: test-key
       BREVO_API_URL: http://mock:8025/brevo
       MAIL_FROM: "PBAT DOOR TO DOOR <no-reply@pbat.test>"
-      # Zoho CPaaS (WhatsApp, voice fallback) is first in the phone provider order, so DageSMS stays unused.
+      # Firebase Phone Auth is the production phone path and wins even when Zoho env vars are set.
+      FIREBASE_API_KEY: test-firebase-key
+      FIREBASE_PROJECT_ID: pbat-test
+      FIREBASE_JWKS_URL: http://mock:8025/firebase/jwks
+      # Left set on purpose: /api/options must still report phoneVia=firebase.
       ZOHO_CPAAS_API_URL: http://mock:8025/zoho/v1.1
       ZOHO_WA_TOKEN: "Zoho-enczapikey test-wa-key"
       ZOHO_WA_FROM: "+234 901 000 0000"

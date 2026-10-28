@@ -20,8 +20,8 @@ const fakeRes = () => {
   res.clearCookie = (name, opts) => res.cleared.push({ name, opts });
   return res;
 };
-async function run(mw, cookies) {
-  const req = { cookies }, res = fakeRes();
+async function run(mw, cookies, extra = {}) {
+  const req = { cookies, method: extra.method || 'GET', path: extra.path || '/me' }, res = fakeRes();
   let err;
   await mw(req, res, (e) => { err = e; });
   return { req, res, err };
@@ -69,6 +69,19 @@ test('sessions never expire: a session idle for a year still works and is refres
   assert.equal(r.req.member.id, 7);
   assert.equal(r.res.cookies.length, 1);
   assert.equal(r.res.cleared.length, 0);
+});
+
+test('logout and logout-all do not re-issue the cookie, even when refresh is due', async () => {
+  const sessions = new Map([['h:tok', { token_hash: 'h:tok', member_id: 7, last_seen: T0 }]]);
+  const store = fakeStore(sessions);
+  const mw = sessionMiddleware({ store, hash: (t) => `h:${t}`, secure: true, refreshMs: 0, now: () => T0 });
+  for (const path of ['/auth/logout', '/auth/logout-all']) {
+    store.touched.length = 0;
+    const r = await run(mw, { sid: 'tok' }, { method: 'POST', path });
+    assert.equal(r.req.member.id, 7);
+    assert.equal(r.res.cookies.length, 0, `no rolling Set-Cookie on ${path}`);
+    assert.equal(store.touched.length, 0);
+  }
 });
 
 test('a revoked (logged-out) token is cleared; a database error is a 500, not a logout', async () => {

@@ -22,7 +22,11 @@ export function inlineScriptHashes(publicDir) {
 
 export function securityHeaders({ publicDir, isProd, firebase, turnstile, mode = process.env.CSP_MODE || 'enforce' }) {
   const firebaseScript = firebase ? [new URL(firebase.sdk).origin, 'https://www.google.com', 'https://www.gstatic.com', 'https://apis.google.com'] : [];
-  const firebaseConnect = firebase ? ['https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com', 'https://www.googleapis.com', 'https://www.google.com'] : [];
+  const firebaseConnect = firebase ? [
+    'https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com',
+    'https://www.googleapis.com', 'https://www.google.com', 'https://recaptcha.google.com',
+    'https://firebaseinstallations.googleapis.com',
+  ] : [];
   const firebaseFrame = firebase ? ['https://www.google.com', 'https://recaptcha.google.com', `https://${firebase.authDomain}`] : [];
   const turnstileOrigins = turnstile ? ['https://challenges.cloudflare.com'] : [];
   const frames = [...firebaseFrame, ...turnstileOrigins];

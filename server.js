@@ -179,10 +179,11 @@ app.use('/api', sessionMiddleware({
 app.get('/api/options', (req, res) =>
   res.json({
     states: STATES, genders: GENDERS, interests: INTERESTS, sms: SMS_ENABLED,
-    phoneVia: FIREBASE && !sms.provider ? 'firebase' : 'server',
+    // Firebase Phone Auth wins whenever it is configured, even if Zoho/Termii/etc. env vars are set.
+    phoneVia: FIREBASE ? 'firebase' : 'server',
     turnstile: TURNSTILE ? TURNSTILE.siteKey : null,
-    // How server-sent phone codes travel, first = default: e.g. ['whatsapp', 'voice'] for Zoho.
-    phoneChannels: sms.provider ? (sms.channels || [sms.via || 'sms']) : [],
+    // How server-sent phone codes travel (unused when phoneVia is firebase).
+    phoneChannels: FIREBASE ? [] : (sms.provider ? (sms.channels || [sms.via || 'sms']) : []),
     firebase: FIREBASE ? { apiKey: FIREBASE.apiKey, authDomain: FIREBASE.authDomain, projectId: FIREBASE.projectId, sdk: FIREBASE.sdk } : null,
   }));
 
@@ -196,13 +197,12 @@ async function sendCode(req, key, id, channel) {
     const wait = Math.ceil((RESEND_COOLDOWN_MS - (now - existing.sent_at)) / 1000);
     return { status: 429, body: { error: `Please wait ${wait}s before requesting another code.`, retryAfter: wait } };
   }
-  if (!(await store.hit(`otp-ip:${req.ip}`, IP_SEND_LIMIT, IP_WINDOW_MS, now))) {
+  if (id.type === 'phone') {
+    const limited = await limitPhone(req, id.value, now);
+    if (limited) return limited;
+  } else if (!(await store.hit(`otp-ip:${req.ip}`, IP_SEND_LIMIT, IP_WINDOW_MS, now))) {
     req.log.warn({ ip: req.ip }, 'per-IP code limit reached');
     return { status: 429, body: { error: 'Too many codes requested from this connection. Try again in an hour.' } };
-  }
-  if (id.type === 'phone' && !(await store.hit(`otp-phone:${id.value}`, PHONE_SEND_LIMIT, PHONE_WINDOW_MS, now))) {
-    req.log.warn('per-phone daily code limit reached');
-    return { status: 429, body: { error: 'This number has had too many codes today. Try again tomorrow, or use your email instead.', dailyLimit: true } };
   }
   const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
   const managed = id.type === 'phone' && sms.managed;     // provider creates and checks the code itself
@@ -272,6 +272,19 @@ async function checkCode(req, key, id, code) {
   return null;
 }
 
+/** Per-IP hourly and per-phone daily caps (sign-in and linking share the phone bucket). */
+async function limitPhone(req, phone, now = Date.now()) {
+  if (!(await store.hit(`otp-ip:${req.ip}`, IP_SEND_LIMIT, IP_WINDOW_MS, now))) {
+    req.log.warn({ ip: req.ip }, 'per-IP code limit reached');
+    return { status: 429, body: { error: 'Too many codes requested from this connection. Try again in an hour.' } };
+  }
+  if (!(await store.hit(`otp-phone:${phone}`, PHONE_SEND_LIMIT, PHONE_WINDOW_MS, now))) {
+    req.log.warn('per-phone daily code limit reached');
+    return { status: 429, body: { error: 'This number has had too many codes today. Try again tomorrow, or use your email instead.', dailyLimit: true } };
+  }
+  return null;
+}
+
 /** Google-signed Firebase token -> verified Nigerian phone number, or { status, body } on failure. */
 async function phoneFromFirebase(req, idToken) {
   if (!FIREBASE) return { fail: { status: 404, body: { error: 'Phone sign-in is not set up.' } } };
@@ -320,6 +333,9 @@ app.post('/api/auth/start', h(async (req, res) => {
   if (!id) {
     return res.status(400).json({ error: 'Enter a valid email address or Nigerian phone number (e.g. 0803 123 4567).' });
   }
+  if (id.type === 'phone' && FIREBASE) {
+    return res.status(400).json({ error: 'Phone sign-in uses a text message on this page.', code: 'use_firebase' });
+  }
   if (id.type === 'phone' && !SMS_ENABLED) {
     return res.status(503).json({ error: "Sign-in by phone isn't available yet. Please use your email address.", code: 'sms_off' });
   }
@@ -346,6 +362,8 @@ app.post('/api/auth/verify', h(async (req, res) => {
 app.post('/api/auth/firebase', h(async (req, res) => {
   const { phone, fail } = await phoneFromFirebase(req, req.body.idToken);
   if (fail) return res.status(fail.status).json(fail.body);
+  const limited = await limitPhone(req, phone);
+  if (limited) return res.status(limited.status).json(limited.body);
   await finishSignIn(req, res, 'phone', phone);
 }));
 
@@ -429,6 +447,9 @@ app.post('/api/me/link/start', h(async (req, res) => {
   if ((id.type === 'email' && m.email_verified) || (id.type === 'phone' && m.phone_verified)) {
     return res.status(400).json({ error: `Your account already has a verified ${id.type === 'email' ? 'email' : 'phone number'}.` });
   }
+  if (id.type === 'phone' && FIREBASE) {
+    return res.status(400).json({ error: 'Phone linking uses a text message on this page.', code: 'use_firebase' });
+  }
   if (id.type === 'phone' && !SMS_ENABLED) return res.status(503).json({ error: "Phone codes aren't available yet." });
   const { status, body } = await sendCode(req, linkKey(m, id), id, req.body.channel);
   res.status(status).json(body);
@@ -451,6 +472,8 @@ app.post('/api/me/link/firebase', h(async (req, res) => {
   if (m.phone_verified) return res.status(400).json({ error: 'Your account already has a verified phone number.' });
   const { phone, fail } = await phoneFromFirebase(req, req.body.idToken);
   if (fail) return res.status(fail.status).json(fail.body);
+  const limited = await limitPhone(req, phone);
+  if (limited) return res.status(limited.status).json(limited.body);
   await finishLink(res, m, 'phone', phone);
 }));
 
@@ -518,7 +541,7 @@ housekeeping.unref();
 const server = app.listen(PORT, HOST, () => {
   logger.info({
     port: PORT, db: 'postgres', email: mailer.provider || 'log (dev)',
-    sms: sms.provider || (FIREBASE ? 'firebase' : IS_PROD ? 'off' : 'log (dev)'),
+    sms: FIREBASE ? 'firebase' : (sms.provider || (IS_PROD ? 'off' : 'log (dev)')),
     env: IS_PROD ? 'production' : 'development',
   }, 'PBAT DOOR TO DOOR is running');
 });
