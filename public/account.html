@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>try{if(localStorage.getItem("pbat-me")){var d=document.documentElement;d.classList.add("signed-in");setTimeout(function(){d.classList.add("nav-ready","page-ready")},3000)}}catch(e){}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>My account · PBAT DOOR TO DOOR</title>
 <meta name="theme-color" content="#06492a">
@@ -61,6 +62,11 @@
           </div>
         </div>
       </section>
+
+      <a class="vol-cta" href="/volunteer">
+        <span><b>Volunteer area</b><small>Your ward, log visits, pledges, leaderboard and the doorstep toolkit</small></span>
+        <span aria-hidden="true">→</span>
+      </a>
 
       <div class="account account-v2">
         <div style="display:grid;gap:22px">
@@ -144,6 +150,15 @@
   import { normalizePhone, isEmail } from '/validate.js';
 
   const { ok, status, data } = await fetchMe();
+  if (!ok && status === 0) {                       // no signal: don't send a logged-in member to the login page
+    mountNav(); mountFooter();                     // shows the remembered member while offline
+    $('#boot').hidden = true; $('#content').hidden = false;
+    $('#content').innerHTML = `<div class="card-lite" style="margin-top:24px"><h1>You're offline</h1>
+      <p class="muted">Your account details need a connection. The <a href="/volunteer">volunteer area</a> and toolkit still work offline.</p>
+      <button class="btn" type="button" onclick="location.reload()">Try again</button></div>`;
+    window.addEventListener('online', () => location.reload());
+    await new Promise(() => {});
+  }
   if (status === 401) { location.replace('/login'); await new Promise(() => {}); }
   if (!ok) {
     // A server or network problem: stay logged in and let them retry.
@@ -153,7 +168,7 @@
     box.innerHTML = '<h2 style="margin-top:0">We couldn\'t load your account</h2><p class="sub"></p><button class="btn" type="button">Try again</button>';
     $('p', box).textContent = `${data.error || 'Something went wrong on our side.'} You're still logged in.`;
     $('button', box).addEventListener('click', () => location.reload());
-    mountNav({ member: null });
+    mountNav();
     await new Promise(() => {});
   }
   const { data: opts } = await api('/api/options');

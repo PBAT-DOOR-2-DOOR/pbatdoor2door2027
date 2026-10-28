@@ -1,0 +1,3 @@
+# Review routing only. Do not turn on “Require review from Code Owners” — Francis
+# (write access) must be able to merge his own pull requests once CI is green.
+public/ @Adukufrancis

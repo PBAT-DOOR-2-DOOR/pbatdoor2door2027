@@ -124,7 +124,7 @@ if (PHASE === 'main') {
 
   test('pages and legacy redirects', async () => {
     const c = client();
-    for (const p of ['/', '/login', '/join', '/signup', '/account', '/contact', '/privacy', '/terms']) {
+    for (const p of ['/', '/login', '/join', '/signup', '/account', '/contact', '/privacy', '/terms', '/volunteer', '/coordinator', '/offline']) {
       const r = await c.get(p);
       assert.equal(r.status, 200, p);
       assert.match(r.headers.get('content-type'), /text\/html/);
@@ -246,6 +246,38 @@ if (PHASE === 'main') {
     const edit = await devA1.post('/api/me', { ...PROFILE, consent: undefined, occupation: 'Teacher' });
     assert.equal(edit.status, 200, edit.text);
     assert.equal(edit.data.member.occupation, 'Teacher');
+    assert.equal(edit.data.member.role, 'volunteer');
+  });
+
+  test('volunteer area: log a visit, idempotent retry, pledge needs consent', async () => {
+    assert.equal((await client().get('/api/volunteer')).status, 401);
+    assert.equal((await client().get('/api/coord/overview')).status, 401);
+
+    const mine = await devA1.get('/api/volunteer');
+    assert.equal(mine.status, 200, mine.text);
+    assert.equal(mine.data.me.name, 'Ada Test Obi');
+    assert.equal(mine.data.role, 'volunteer');
+    assert.equal(mine.data.totals.visits, 0);
+
+    const clientId = crypto.randomBytes(8).toString('hex');
+    const visit = await devA1.post('/api/visits', { clientId, households: 4, people: 12, area: 'Test street' });
+    assert.equal(visit.status, 200, visit.text);
+    assert.equal(visit.data.totals.visits, 1);
+    assert.equal(visit.data.totals.households, 4);
+    const again = await devA1.post('/api/visits', { clientId, households: 4 });
+    assert.equal(again.status, 200, again.text);
+    assert.equal(again.data.totals.visits, 1, 'the same offline clientId is not counted twice');
+
+    const noConsent = await devA1.post('/api/pledges', { clientId: crypto.randomBytes(8).toString('hex'), name: 'Neighbour', consent: false });
+    assert.equal(noConsent.status, 400);
+    const pledge = await devA1.post('/api/pledges', { clientId: crypto.randomBytes(8).toString('hex'), name: 'Neighbour', consent: true });
+    assert.equal(pledge.status, 200, pledge.text);
+    assert.equal(pledge.data.totals.pledges, 1);
+
+    const board = await devA1.get('/api/leaderboard?scope=state');
+    assert.equal(board.status, 200, board.text);
+    assert.ok(board.data.people.some((p) => p.me));
+    assert.equal((await devA1.get('/api/coord/overview')).status, 403);
   });
 
   test('second device signs in to the same account', async () => {
