@@ -1,4 +1,5 @@
 // PBAT DOOR TO DOOR — shared browser code (used by every page)
+import { normalizePhone } from '/validate.js';
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -18,6 +19,20 @@ export async function api(path, body) {
   } catch {
     return { ok: false, status: 0, data: { error: 'No connection. Check your internet and try again.' } };
   }
+}
+
+/**
+ * GET /api/me, retrying transient failures (no connection, 5xx) a few times.
+ * Only a 401 means "not logged in"; any other failure must never be treated as a logout.
+ */
+export async function fetchMe(tries = 3) {
+  let r;
+  for (let i = 0; i < tries; i++) {
+    r = await api('/api/me');
+    if (r.ok || (r.status >= 400 && r.status < 500)) return r;
+    if (i < tries - 1) await new Promise((done) => setTimeout(done, 700 * 2 ** i));
+  }
+  return r;
 }
 
 export function setLoading(btn, on) { btn.disabled = on; btn.classList.toggle('loading', on); }
@@ -75,10 +90,17 @@ export async function mountNav({ member, page } = {}) {
   if (member === undefined) {
     const cached = cachedMember();
     if (cached && !$('#site-nav')?._shown) renderNav(cached, page);       // instant, from this device
-    const { ok, status, data } = await api('/api/me');
-    member = ok ? data.member : status === 0 ? cached : null;          // offline: trust what we remembered
-    if (ok || status !== 0) rememberMember(member);
-    if (cached && sameMember(cached, member) && $('#site-nav')?._shown) return member;   // already right
+    const { ok, status, data } = await fetchMe(2);
+    if (ok) {
+      member = data.member;
+      rememberMember(member);
+    } else if (status === 401) {
+      member = null;
+      rememberMember(null);
+    } else {
+      member = cached;                           // offline / 5xx: keep remembered member, cookie untouched
+    }
+    if (cached && sameMember(cached, member) && $('#site-nav')?._shown) return member;
   } else {
     rememberMember(member);
   }
@@ -219,14 +241,22 @@ export function createOtp(container, onComplete) {
 }
 
 // Countdown on a "Resend" button.
-export function cooldown(btn, seconds, label = 'Resend code') {
+export function cooldown(btn, seconds, label = 'Resend code', waiting = (s) => `Resend in ${s}s`) {
   clearInterval(btn._timer);
   let left = seconds;
   const tick = () => {
     if (left <= 0) { clearInterval(btn._timer); btn.disabled = false; btn.textContent = label; return; }
-    btn.disabled = true; btn.textContent = `Resend in ${left--}s`;
+    btn.disabled = true; btn.textContent = waiting(left--);
   };
   tick(); btn._timer = setInterval(tick, 1000);
+}
+
+// Where the code went, from a /start response: "Code sent via WhatsApp to +234 803 ••• •567. …"
+export function sentText(data) {
+  const expires = data.expiresMinutes ? ` It expires in ${data.expiresMinutes} minutes.` : ' Use it within a few minutes.';
+  if (data.via === 'voice') return `We're calling ${data.sentTo} now. Answer to hear your 6-digit code.${expires}`;
+  const how = { email: 'email', sms: 'text message', whatsapp: 'WhatsApp' }[data.via] || 'text message';
+  return `Code sent via ${how} to ${data.sentTo}.${expires}`;
 }
 
 // +2348031234567 -> 0803 123 4567
@@ -329,8 +359,7 @@ export function checkProfile(p, v = {}) {
   const e = {};
   if (p.full_name.trim().split(/\s+/).filter(Boolean).length < 2) e.full_name = 'Enter your first and last name.';
   if (!v.emailVerified && p.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(p.email.trim())) e.email = 'Enter a valid email address, or leave it blank.';
-  const digits = p.phone.replace(/[^\d+]/g, '');
-  if (!v.phoneVerified && digits && !/^(\+?234|0)[789]\d{9}$/.test(digits)) e.phone = 'Enter a valid Nigerian phone number (e.g. 0803 123 4567), or leave it blank.';
+  if (!v.phoneVerified && p.phone.trim() && !normalizePhone(p.phone)) e.phone = 'Enter a valid Nigerian phone number (e.g. 0803 123 4567), or leave it blank.';
   if (!p.date_of_birth) { /* optional */ }
   else if (p.date_of_birth === 'invalid') e.date_of_birth = 'Enter a real date as DD/MM/YYYY, e.g. 28/11/2000.';
   else {

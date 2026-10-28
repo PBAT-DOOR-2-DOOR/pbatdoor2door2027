@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createMailer } from '../../mailer.js';
-import { inlineScriptHashes } from '../../security.js';
+import { inlineScriptHashes, securityHeaders } from '../../security.js';
 
 async function capture(fn) {
   const seen = [];
@@ -63,4 +63,25 @@ test('CSP hashes match every inline script in the pages', () => {
   }
   assert.ok(found.length >= 3);
   assert.equal(hashes.length, new Set(found).size);
+});
+
+test('CSP allows the Firebase SDK and reCAPTCHA when Firebase is configured', () => {
+  const pub = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'public');
+  const mw = securityHeaders({
+    publicDir: pub, isProd: true,
+    firebase: { sdk: 'https://www.gstatic.com/firebasejs/10.12.2', authDomain: 'pbat-test.firebaseapp.com' },
+  });
+  const headers = {};
+  const res = {
+    setHeader(k, v) { headers[String(k).toLowerCase()] = Array.isArray(v) ? v.join('; ') : v; },
+    getHeader(k) { return headers[String(k).toLowerCase()]; },
+    removeHeader() {},
+  };
+  mw({}, res, () => {});
+  const csp = headers['content-security-policy'] || '';
+  assert.match(csp, /https:\/\/www\.gstatic\.com/);
+  assert.match(csp, /https:\/\/www\.google\.com/);
+  assert.match(csp, /https:\/\/recaptcha\.google\.com/);
+  assert.match(csp, /https:\/\/identitytoolkit\.googleapis\.com/);
+  assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/);
 });

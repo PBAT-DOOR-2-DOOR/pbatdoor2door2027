@@ -101,24 +101,29 @@
               <div id="link-a">
                 <div class="field" data-field="link">
                   <label for="link-input" id="link-label">Email address</label>
-                  <input id="link-input" autocapitalize="off" spellcheck="false">
-                  <div class="err"></div>
+                  <div id="link-box">
+                    <span class="tel-cc" id="link-cc" aria-hidden="true" hidden>🇳🇬 +234</span>
+                    <input id="link-input" autocapitalize="off" spellcheck="false" aria-describedby="link-hint link-input-err">
+                  </div>
+                  <div class="err" id="link-input-err"></div>
                 </div>
+                <p class="id-hint" id="link-hint" hidden></p>
                 <div class="link-actions">
                   <button class="btn small" id="link-send" type="submit"><span class="spinner"></span><span>Send code</span></button>
                   <button class="btn small ghost" id="link-cancel" type="button">Cancel</button>
                 </div>
               </div>
               <div id="link-b" hidden>
-                <p class="methods-sub" id="link-sent"></p>
+                <p class="methods-sub" id="link-sent" aria-live="polite"></p>
                 <div class="otp" id="link-otp" role="group" aria-label="6-digit code"></div>
                 <div class="link-actions" style="margin-top:12px">
                   <button class="btn small" id="link-verify" type="button"><span class="spinner"></span><span>Verify &amp; link</span></button>
                   <button class="linkish" id="link-resend" type="button" disabled>Resend code</button>
                   <button class="linkish" id="link-back" type="button">Change</button>
                 </div>
+                <p class="id-hint" id="link-call-row" hidden>No WhatsApp on this number? <button type="button" class="linkish" id="link-call">Call me with the code</button></p>
               </div>
-              <div class="msg err" id="link-err"></div>
+              <div class="msg err" id="link-err" role="alert"></div>
               <div class="msg dev" id="link-dev"></div>
               <div id="link-recaptcha"></div>
             </form>
@@ -140,10 +145,11 @@
 <footer class="site" id="site-footer"></footer>
 
 <script type="module">
-  import { $, api, setLoading, message, renderProfileFields, readProfileFields, checkProfile, showFieldErrors, prettyPhone, mountNav, toast, logout, createOtp, cooldown, devCodeNote, mountFooter } from '/app.js';
+  import { $, api, fetchMe, setLoading, message, renderProfileFields, readProfileFields, checkProfile, showFieldErrors, prettyPhone, mountNav, toast, logout, createOtp, cooldown, devCodeNote, sentText, mountFooter } from '/app.js';
   import { firebasePhone } from '/phone.js';
+  import { normalizePhone, isEmail } from '/validate.js';
 
-  const { ok, status, data } = await api('/api/me');
+  const { ok, status, data } = await fetchMe();
   if (!ok && status === 0) {                       // no signal: don't send a logged-in member to the login page
     mountNav(); mountFooter();                     // shows the remembered member while offline
     $('#boot').hidden = true; $('#content').hidden = false;
@@ -153,7 +159,18 @@
     window.addEventListener('online', () => location.reload());
     await new Promise(() => {});
   }
-  if (!ok) { location.replace('/login'); await new Promise(() => {}); }
+  if (status === 401) { location.replace('/login'); await new Promise(() => {}); }
+  if (!ok) {
+    // A server or network problem: stay logged in and let them retry.
+    const box = $('#boot');
+    box.className = 'card narrow';
+    box.setAttribute('role', 'alert');
+    box.innerHTML = '<h2 style="margin-top:0">We couldn\'t load your account</h2><p class="sub"></p><button class="btn" type="button">Try again</button>';
+    $('p', box).textContent = `${data.error || 'Something went wrong on our side.'} You're still logged in.`;
+    $('button', box).addEventListener('click', () => location.reload());
+    mountNav();
+    await new Promise(() => {});
+  }
   const { data: opts } = await api('/api/options');
   let user = data.member;
   mountNav({ member: user }); mountFooter();
@@ -297,52 +314,77 @@
     }
   }
 
-  let linkType = 'email', linkValue = '';
+  let linkType = 'email', linkValue = '', linkVia = '';
   const linkOtp = createOtp($('#link-otp'), () => $('#link-verify').click());
   const useFb = () => linkType === 'phone' && opts.phoneVia === 'firebase';
   const fbPhone = opts.firebase ? firebasePhone(opts.firebase, $('#link-recaptcha')) : null;
+  const channels = opts.phoneChannels || [];
+  const canCall = opts.phoneVia !== 'firebase' && channels.includes('voice');
+  const CALL_LABEL = 'Call me with the code';
 
   function openLink(type, value = '') {
     linkType = type;
-    $('#link-label').textContent = type === 'email' ? 'Email address' : 'Phone number';
+    const phone = type === 'phone';
+    $('#link-label').textContent = phone ? 'Phone number' : 'Email address';
+    $('#link-box').className = phone ? 'tel' : '';
+    $('#link-cc').hidden = !phone;
     const inp = $('#link-input');
-    inp.type = type === 'email' ? 'email' : 'tel';
-    inp.inputMode = type === 'email' ? 'email' : 'tel';
-    inp.placeholder = type === 'email' ? 'you@example.com' : '0803 123 4567';
-    inp.value = type === 'phone' ? prettyPhone(value) : (value || '');
+    inp.type = phone ? 'tel' : 'email';
+    inp.inputMode = phone ? 'tel' : 'email';
+    inp.autocomplete = phone ? 'tel' : 'email';
+    inp.placeholder = phone ? '0803 123 4567' : 'you@example.com';
+    inp.value = phone ? prettyPhone(value) : (value || '');
+    inp.removeAttribute('aria-invalid');
+    $('#link-hint').hidden = !phone;
+    $('#link-hint').textContent = phone && channels[0] === 'whatsapp' && !useFb()
+      ? `We'll send the code on WhatsApp${canCall ? ', or call you with it' : ''}. Nigerian mobile numbers only.`
+      : phone && channels[0] === 'voice' && !useFb() ? "We'll call you and read out the code. Nigerian mobile numbers only." : 'Nigerian mobile numbers only.';
     $('[data-field="link"]').classList.remove('invalid');
     message($('#link-err'), ''); message($('#link-dev'), '');
     $('#link-a').hidden = false; $('#link-b').hidden = true; $('#link-form').hidden = false;
     $('#methods').scrollIntoView({ behavior: 'smooth', block: 'start' });
     inp.focus({ preventScroll: true });
   }
-  const closeLink = () => { $('#link-form').hidden = true; clearInterval($('#link-resend')._timer); };
+  const stopTimers = () => { clearInterval($('#link-resend')._timer); clearInterval($('#link-call')._timer); };
+  const closeLink = () => { $('#link-form').hidden = true; stopTimers(); };
   $('#link-cancel').addEventListener('click', closeLink);
   $('#link-back').addEventListener('click', () => { $('#link-a').hidden = false; $('#link-b').hidden = true; message($('#link-err'), ''); });
 
-  async function sendLink() {
+  function startCooldown(seconds) {
+    cooldown($('#link-resend'), seconds);
+    cooldown($('#link-call'), seconds, CALL_LABEL, (s) => `${CALL_LABEL} (in ${s}s)`);
+  }
+  async function sendLink(channel) {
     if (useFb()) {
       try { await fbPhone.send(linkValue); } catch (e) { return e.message; }
-      $('#link-sent').textContent = `We sent a 6-digit code by text message to ${prettyPhone(linkValue) || linkValue}.`;
+      $('#link-sent').textContent = `Code sent by text message to ${prettyPhone(linkValue) || linkValue}.`;
+      $('#link-call-row').hidden = true;
       cooldown($('#link-resend'), 60);
       return null;
     }
-    const { ok, data } = await api('/api/me/link/start', { identifier: linkValue });
-    if (!ok) return data.error || 'Something went wrong.';
-    $('#link-sent').textContent = `We sent a 6-digit code by ${data.via === 'email' ? 'email' : 'text message'} to ${data.sentTo}.`;
+    const { ok, data } = await api('/api/me/link/start', { identifier: linkValue, ...(channel ? { channel } : {}) });
+    if (!ok) {
+      if (data.retryAfter) startCooldown(data.retryAfter);
+      return data.error || 'Something went wrong.';
+    }
+    linkVia = data.via;
+    $('#link-sent').textContent = sentText(data);
+    $('#link-call-row').hidden = !(data.type === 'phone' && canCall && data.via !== 'voice');
     devCodeNote($('#link-dev'), data.devCode);
-    cooldown($('#link-resend'), data.cooldown);
+    startCooldown(data.cooldown);
     return null;
   }
 
   $('#link-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const v = $('#link-input').value.trim();
-    const bad = linkType === 'email' ? !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v) : !/^(\+?234|0)[789]\d{9}$/.test(v.replace(/[\s\-()]/g, ''));
+    const inp = $('#link-input');
+    const v = linkType === 'email' ? inp.value.trim().toLowerCase() : normalizePhone(inp.value);
+    const bad = linkType === 'email' ? !isEmail(v) : !v;
     const f = $('[data-field="link"]');
     f.classList.toggle('invalid', bad);
-    $('.err', f).textContent = bad ? (linkType === 'email' ? 'Enter a valid email address.' : 'Enter a valid Nigerian phone number, e.g. 0803 123 4567.') : '';
-    if (bad) return;
+    inp.setAttribute('aria-invalid', String(bad));
+    $('.err', f).textContent = bad ? (linkType === 'email' ? 'Enter a valid email address.' : 'Enter a valid Nigerian mobile number, e.g. 0803 123 4567.') : '';
+    if (bad) return inp.focus();
     linkValue = v; message($('#link-err'), '');
     const btn = $('#link-send'); setLoading(btn, true);
     const err = await sendLink();
@@ -351,12 +393,14 @@
     $('#link-a').hidden = true; $('#link-b').hidden = false; linkOtp.clear();
   });
 
-  $('#link-resend').addEventListener('click', async () => {
-    message($('#link-err'), '');
-    const err = await sendLink();
-    message($('#link-err'), err || 'A new code is on its way.', err ? 'err' : 'ok');
+  async function resendLink(channel) {
+    $('#link-resend').disabled = true; $('#link-call').disabled = true; message($('#link-err'), '');
+    const err = await sendLink(channel);
+    message($('#link-err'), err || (linkVia === 'voice' ? 'Calling you now. Answer to hear your code.' : 'A new code is on its way.'), err ? 'err' : 'ok');
     linkOtp.clear();
-  });
+  }
+  $('#link-resend').addEventListener('click', () => resendLink(linkVia === 'voice' ? 'voice' : undefined));
+  $('#link-call').addEventListener('click', () => resendLink('voice'));
 
   $('#link-verify').addEventListener('click', async () => {
     const code = linkOtp.value();

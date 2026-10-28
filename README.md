@@ -3,8 +3,8 @@
 The volunteer website for the PBAT DOOR TO DOOR movement, served at **https://pbatdoor2door2027.org** (`www` redirects to it).
 
 - **Landing page** (`/`): the movement and its Founder & Convener, Tompolo; the President's photo, a short bio timeline, and the administration's works, each linked to its source.
-- **Join or log in** (`/login`; `/join` and `/signup` redirect here): type an email **or** a Nigerian phone number, then the 6-digit code. The first sign-in creates the account.
-- **My account** (`/account`; `/welcome` redirects here): "Complete your profile" (full name, state and LGA required; the rest optional), edit details, link a second email or phone (which merges duplicate accounts), see signed-in devices, log out of one or all devices. Sessions last until the member logs out.
+- **Join or log in** (`/login`; `/join` and `/signup` redirect here): pick **Email** or **Phone** (side-by-side tabs; the phone box has a fixed 🇳🇬 +234 prefix and accepts 0803…, 803… or +234… forms), then type the 6-digit code. Email codes come from the site; phone codes are a text from **Firebase Phone Authentication**. The first sign-in creates the account.
+- **My account** (`/account`; `/welcome` redirects here): "Complete your profile" (full name, state and LGA required; the rest optional), edit details, link a second email or phone (which merges duplicate accounts), see signed-in devices, log out of one or all devices. Sessions last until the member logs out (the cookie is rolled, at most once a day, so the browser's ~400-day cap doesn't drop it).
 - **Volunteer area** (`/volunteer`): My Ward, log door-to-door visits, pledges, leaderboard and doorstep toolkit. Works offline (service worker + queued visits). Coordinators use `/coordinator`.
 - **Polling units**: state → LGA → ward → polling unit lists from INEC data (176,846 units) in `public/geo/`, plus **"near me"**, which suggests the closest units from the phone's GPS (`/api/geo/near`).
 
@@ -182,17 +182,34 @@ ZeptoMail is Zoho's transactional email service, a natural fit since the domain 
 
 If several are set, the first one wins in this order: Brevo, ZeptoMail, Resend, Gmail Apps Script (`apps-script/Code.gs`), SMTP.
 
-### Phone sign-in (optional)
+### Phone sign-in (Firebase Phone Authentication)
 
-Without a phone option configured, production runs email-only and the page says phone sign-in isn't available yet. Options (texting costs money with every provider):
+Without Firebase configured, production runs email-only and the Phone tab says phone sign-in is coming soon. **When `FIREBASE_API_KEY` and `FIREBASE_PROJECT_ID` are set, Firebase is used even if Zoho / Termii / other SMS env vars are also present.** This is Firebase **Phone Authentication** (SMS codes in the browser via the Firebase JS SDK and invisible reCAPTCHA), not FCM push.
 
-- **Google Firebase** (no Sender ID or CAC): set `FIREBASE_API_KEY` and `FIREBASE_PROJECT_ID`, and add `pbatdoor2door2027.org` and `www.pbatdoor2door2027.org` under Firebase → Authentication → Settings → **Authorized domains**. The browser does the code step with Firebase (invisible reCAPTCHA) and the server verifies Google's signed token. The Content-Security-Policy allows Google's script, reCAPTCHA and Firebase origins automatically when Firebase is configured. If the phone step is ever blocked by the browser, set `CSP_MODE=report-only`, redeploy, and check the browser console for the blocked address.
-- **Message Central VerifyNow** (`MC_CUSTOMER_ID`, `MC_PASSWORD`; `MC_FLOW=WHATSAPP` for WhatsApp).
-- **DageSMS** (`DAGESMS_API_KEY`, optional `DAGESMS_SENDER`).
-- **Termii** (`TERMII_API_KEY`, `TERMII_SENDER_ID`).
-- **Twilio** (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`).
+**Firebase console:**
 
-Each visitor IP can request at most 10 codes per hour (`OTP_IP_LIMIT_PER_HOUR`), to protect SMS credit. The count is kept in Postgres, so restarts don't reset it.
+1. Open [Firebase console](https://console.firebase.google.com) → the project (or create one).
+2. **Build → Authentication → Sign-in method → Phone → Enable.** This is Phone Auth, not Cloud Messaging.
+3. **Authentication → Settings → Authorized domains** → add `pbatdoor2door2027.org` and `www.pbatdoor2door2027.org` (keep `localhost` for local testing). Without both production hostnames, the browser fails with `auth/unauthorized-domain`.
+4. **Project settings → General**: copy the **Web API key** and **Project ID**. Optional: **Auth domain** if it is not `<projectId>.firebaseapp.com`.
+5. **Upgrade the project to Blaze** (pay as you go). Phone Auth is not available on the free Spark plan beyond a tiny trial.
+6. Web does not need SHA-1/SHA-256 fingerprints (those are Android). No extra app config file is required; the site already sends `FIREBASE_API_KEY` / `FIREBASE_PROJECT_ID` / `FIREBASE_AUTH_DOMAIN` to the browser.
+
+**Then in `/opt/pbatdoor2door/.env`:**
+
+```bash
+FIREBASE_API_KEY="<Web API key from Project settings>"
+FIREBASE_PROJECT_ID="<Project ID>"
+# FIREBASE_AUTH_DOMAIN="<projectId>.firebaseapp.com"   # only if it isn't the default
+```
+
+Run `docker compose up -d` (or `scripts/deploy.sh`). `docker compose logs app | grep 'is running'` should show `sms: firebase`. Sign in on the Phone tab with your own Nigerian number.
+
+The Content-Security-Policy allows the Firebase SDK (`www.gstatic.com`), Google reCAPTCHA (`www.google.com`, `recaptcha.google.com`) and the Identity Toolkit APIs automatically when Firebase is configured. If the phone step is blocked by the browser, set `CSP_MODE=report-only`, redeploy, and check the console for the blocked address.
+
+Limits that protect the credit: each email gets one new code per minute; each visitor IP can request at most 10 codes per hour (`OTP_IP_LIMIT_PER_HOUR`); and each phone number can complete at most 5 Firebase sign-ins or links per day (`OTP_PHONE_LIMIT_PER_DAY`). The counts are kept in Postgres, so restarts don't reset them.
+
+Server-side SMS providers (Zoho CPaaS WhatsApp/voice, Message Central, DageSMS, Termii, Twilio) remain in the code as a fallback **only when Firebase is not set**. Leave their env vars empty for production.
 
 ---
 
@@ -314,7 +331,7 @@ scripts/restore.sh backups/daily/pbat-YYYYMMDD-HHMMSS.dump    # type "restore" t
 
 ## 8. Environment variables
 
-All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit `.env`). Quote values containing spaces or `<>`; avoid `$`.
+All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit `.env`). `scripts/deploy.sh` reads the file as a shell script (`. ./.env`), so **quote any value containing spaces or `<>`**, e.g. `MAIL_FROM="PBAT DOOR TO DOOR <no-reply@pbatdoor2door2027.org>"` or a key pasted with its `Zoho-enczapikey ` prefix; unquoted, the deploy fails or the value is cut at the space. Avoid `$`.
 
 | Variable | Purpose |
 |---|---|
@@ -332,12 +349,17 @@ All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit
 | `RESEND_API_KEY` | Resend email. |
 | `GMAIL_SCRIPT_URL`, `GMAIL_SCRIPT_SECRET` | Gmail via Google Apps Script (`apps-script/Code.gs`, ~100 emails/day). |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | SMTP (blocked on Linode by default). |
-| `FIREBASE_API_KEY`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_SDK_URL`, `FIREBASE_JWKS_URL` | Firebase phone sign-in. |
+| `FIREBASE_API_KEY`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_SDK_URL`, `FIREBASE_JWKS_URL` | Firebase Phone Authentication. When the API key and project ID are set, Firebase wins over every other phone provider. `FIREBASE_JWKS_URL` is for tests only. |
+| `ZOHO_WA_TOKEN`, `ZOHO_WA_FROM`, `ZOHO_WA_TEMPLATE`, `ZOHO_WA_CODE_VAR` | Zoho CPaaS WhatsApp codes: the agent's WhatsApp API key, sender number, Authentication template key or alias, and its code variable (default `code`). |
+| `ZOHO_VOICE_TOKEN`, `ZOHO_VOICE_FROM`, `ZOHO_VOICE_TEMPLATE`, `ZOHO_VOICE_CODE_VAR`, `ZOHO_VOICE_LANGUAGE` | Zoho CPaaS voice calls (fallback and "Call me with the code"): the agent's Voice API key and number; optional voice template (default: text-to-speech). |
+| `ZOHO_CPAAS_API_URL` | Zoho CPaaS API base (default `https://cpaas.zoho.com/v1.1`). |
 | `MC_CUSTOMER_ID`, `MC_PASSWORD` / `MC_KEY`, `MC_FLOW`, `MC_EMAIL`, `MC_BASE_URL` | Message Central. |
 | `DAGESMS_API_KEY`, `DAGESMS_SENDER`, `DAGESMS_ROUTE`, `DAGESMS_BASE_URL` | DageSMS. |
 | `TERMII_API_KEY`, `TERMII_SENDER_ID`, `TERMII_CHANNEL`, `TERMII_BASE_URL` | Termii. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Twilio. |
 | `OTP_IP_LIMIT_PER_HOUR` | Codes per visitor IP per hour (default 10). |
+| `OTP_PHONE_LIMIT_PER_DAY` | Codes per phone number per day, sign-in and linking together (default 5). |
+| `SESSION_REFRESH_MS` | How often to re-issue the session cookie (default 1 day). Sessions on the server never expire; only logout deletes them. |
 | `NATIONAL_ADMINS` | Comma-separated verified emails/phones who can see every state and appoint coordinators. |
 | `CSP_MODE` | `enforce` (default), `report-only`, or `off`. |
 | `TRUST_PROXY` | Proxy hops in front of the app (default 1 = Caddy). Don't change. |
@@ -368,7 +390,10 @@ docker compose down                     # stop everything (data is kept in volum
 | Everyone gets "Too many codes requested" | Real visitor IPs aren't reaching the app: Cloudflare's proxy is on but `PROXY_MODE` is still `direct`. |
 | No emails arrive | `docker compose logs app \| grep -i 'send failed'`. 401 = wrong key or Brevo Authorised IPs; unverified sender; or spam (finish SPF/DKIM). SMTP timeouts mean the port is blocked: switch to Brevo or ZeptoMail. |
 | Login works but you're bounced back to `/login` | You're on `http://` or the raw IP; use `https://pbatdoor2door2027.org`. |
-| Firebase `auth/unauthorized-domain` | Add both hostnames to Firebase Authorized domains. |
+| Firebase `auth/unauthorized-domain` | Add `pbatdoor2door2027.org` and `www.pbatdoor2door2027.org` under Authentication → Settings → Authorized domains. |
+| Firebase `auth/billing-not-enabled` | Upgrade the Firebase project to Blaze. |
+| Phone step blocked by the browser | Set `CSP_MODE=report-only`, redeploy, and read the blocked URL in the console. |
+| "This number has had too many codes today" | The per-phone daily cap (`OTP_PHONE_LIMIT_PER_DAY`, default 5). It resets 24 hours after the earlier sends. |
 | `git pull` permission denied | Deploy key missing or removed on GitHub (section 2b). |
 | Disk filling up | `docker system df`; `docker image prune`; old backups rotate automatically. Container logs are capped at 5 × 10 MB per service. |
 
@@ -376,8 +401,8 @@ docker compose down                     # stop everything (data is kept in volum
 
 ## 10. Tests
 
-- `npm test`: unit tests (input validation, the polling-unit lookup compared with the original linear scan at hundreds of points, email provider request formats, CSP hashes).
-- `scripts/test-stack.sh`: builds and starts the **whole production stack** locally (Postgres, app with `NODE_ENV=production`, Caddy with HTTPS on a test domain using Caddy's internal CA, backups), with a mock standing in for Brevo and DageSMS, then runs `test/e2e/stack.test.js` through Caddy: health/readiness, HTTP→HTTPS and www→apex redirects, pages and legacy redirects, security headers, pre-compressed geo data, email sign-in (cooldown, wrong code, single-use code, Secure/HttpOnly/SameSite cookie, no codes leaked), profile validation and save, second device, phone sign-in, account linking and merge, logout and logout-all, `/api/geo/near`, the per-IP limit including that a spoofed `X-Forwarded-For` is ignored. It then restarts the app and checks sessions and the rate limit survived, takes a backup, restores it with `scripts/restore.sh`, and checks again. It needs free ports 80, 443, 3000 and 8025, so run it on a development machine or in CI, **not on the production server**.
+- `npm test`: unit tests (input validation including phone formats, the polling-unit lookup compared with the original linear scan at hundreds of points, email and Zoho WhatsApp/voice request formats, rolling sessions, CSP hashes including Firebase/reCAPTCHA origins).
+- `scripts/test-stack.sh`: builds and starts the **whole production stack** locally (Postgres, app with `NODE_ENV=production`, Caddy with HTTPS on a test domain using Caddy's internal CA, backups), with a mock standing in for Brevo and Firebase Phone Auth (JWKS + test ID tokens), then runs `test/e2e/stack.test.js` through Caddy: health/readiness, HTTP→HTTPS and www→apex redirects, pages and legacy redirects, security headers (including Firebase CSP), pre-compressed geo data, email sign-in (cooldown, wrong code, single-use code, Secure/HttpOnly/SameSite cookie, no codes leaked), rolling session-cookie refresh and that logout still revokes it, profile validation and save, second device, phone sign-in by Firebase (local 080… format, consent, join), account linking and merge, the per-phone daily cap across Firebase sign-in and linking, logout and logout-all, `/api/geo/near`, the per-IP limit including that a spoofed `X-Forwarded-For` is ignored. It then restarts the app and checks sessions and both rate limits survived, takes a backup, restores it with `scripts/restore.sh`, and checks again. It needs free ports 80, 443, 3000 and 8025, so run it on a development machine or in CI, **not on the production server**.
 
 Both run automatically in GitHub Actions on every pull request and push (section 6, "Automatic deploys").
 
