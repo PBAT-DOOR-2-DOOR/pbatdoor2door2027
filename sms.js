@@ -1,4 +1,8 @@
 // Sends the sign-in code to a phone. Picks the first provider that is configured:
+//   0. Zoho CPaaS (ZOHO_WA_TOKEN + ZOHO_WA_FROM + ZOHO_WA_TEMPLATE, and/or ZOHO_VOICE_TOKEN + ZOHO_VOICE_FROM)
+//      — the same Zoho account as ZeptoMail. Zoho has no SMS for Nigeria (SMS is India-only), so the
+//      code goes by WhatsApp (a Meta-approved Authentication template) and/or an automated voice call.
+//      send() returns the channel actually used; a failed WhatsApp send falls back to a call.
 //   1. Message Central VerifyNow (MC_CUSTOMER_ID + MC_PASSWORD) — no Sender ID / CAC needed;
 //      they send from their own approved senders, by SMS or WhatsApp (MC_FLOW). They create
 //      the code themselves, so this provider is "managed": start() + check() instead of send().
@@ -11,9 +15,78 @@
 // Phone numbers arrive in the form +2348031234567.
 import { logger } from './logger.js';
 
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+const digitsOf = (s) => String(s || '').replace(/\D/g, '');
+
+// Zoho CPaaS (https://www.zoho.com/cpaas/help/api/api-home.html). Each channel of an Agent has its
+// own API key (Agents > the agent > SMTP/API), so the ZeptoMail email token can't be reused here.
+function zohoCpaas(env, appName) {
+  const key = (v) => String(v || '').trim().replace(/^Zoho-enczapikey\s+/i, '');
+  const base = (env.ZOHO_CPAAS_API_URL || 'https://cpaas.zoho.com/v1.1').trim().replace(/\/+$/, '');
+  const wa = env.ZOHO_WA_TOKEN && env.ZOHO_WA_FROM && env.ZOHO_WA_TEMPLATE
+    ? { token: key(env.ZOHO_WA_TOKEN), from: `+${digitsOf(env.ZOHO_WA_FROM)}`, template: env.ZOHO_WA_TEMPLATE.trim(),
+      codeVar: (env.ZOHO_WA_CODE_VAR || 'code').trim() }
+    : null;
+  const voice = env.ZOHO_VOICE_TOKEN && env.ZOHO_VOICE_FROM
+    ? { token: key(env.ZOHO_VOICE_TOKEN), from: digitsOf(env.ZOHO_VOICE_FROM), template: (env.ZOHO_VOICE_TEMPLATE || '').trim(),
+      codeVar: (env.ZOHO_VOICE_CODE_VAR || 'code').trim(), language: (env.ZOHO_VOICE_LANGUAGE || 'en').trim() }
+    : null;
+  if (!wa && !voice) return null;
+  const templateRef = (t) => (isUuid(t) ? { template_key: t } : { template_alias: t });
+
+  async function post(path, token, body) {
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { Authorization: `Zoho-enczapikey ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+    const raw = await res.text().catch(() => '');
+    let j = {}; try { j = JSON.parse(raw); } catch {}
+    // Accepted = queued. Delivery problems (e.g. the number isn't on WhatsApp) only show in Zoho's logs.
+    if (!res.ok || j.error || !j.data?.message_id) throw new Error(`Zoho CPaaS ${path} ${res.status}: ${raw}`.slice(0, 400));
+  }
+  const sendWhatsApp = (phone, code) => post('/whatsapp', wa.token, {
+    from: wa.from, to: phone, ...templateRef(wa.template), merge_info: { [wa.codeVar]: code },
+  });
+  const call = (phone, code) => {
+    const spoken = code.split('').join(', ');
+    return post('/voice', voice.token, {
+      from: voice.from, to: digitsOf(phone),
+      ...(voice.template
+        ? { ...templateRef(voice.template), merge_info: { [voice.codeVar]: code } }
+        : { message_content: `Hello. Your ${appName} code is ${spoken}. Again, your code is ${spoken}. Goodbye.`, language: voice.language }),
+    });
+  };
+
+  const channels = [wa && 'whatsapp', voice && 'voice'].filter(Boolean);
+  return {
+    provider: `zoho-${channels.join('+')}`,
+    via: channels[0],
+    channels,
+    /** Returns the channel used: 'whatsapp' or 'voice'. Pass { channel: 'voice' } to call straight away. */
+    async send(phone, code, { channel } = {}) {
+      if (wa && (channel !== 'voice' || !voice)) {
+        try {
+          await sendWhatsApp(phone, code);
+          return 'whatsapp';
+        } catch (err) {
+          if (!voice) throw err;
+          logger.warn({ err: err.message }, 'Zoho WhatsApp send failed; calling with the code instead');
+        }
+      }
+      await call(phone, code);
+      return 'voice';
+    },
+  };
+}
+
 export function createSms(env = process.env) {
   const appName = env.APP_NAME || 'PBAT DOOR TO DOOR';
   const text = (code) => `${code} is your ${appName} code. It expires in 10 minutes. Don't share it with anyone.`;
+
+  const zoho = zohoCpaas(env, appName);
+  if (zoho) return zoho;
 
   if (env.MC_CUSTOMER_ID && (env.MC_PASSWORD || env.MC_KEY)) {
     const base = (env.MC_BASE_URL || 'https://cpaas.messagecentral.com').trim().replace(/\/+$/, '');

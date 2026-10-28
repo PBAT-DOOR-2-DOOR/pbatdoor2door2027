@@ -15,6 +15,7 @@ import { createSms } from './sms.js';
 import { loadGeoIndex, nearest } from './geo.js';
 import { securityHeaders } from './security.js';
 import { staticFiles } from './static.js';
+import { sessionMiddleware, cookieOptions, COOKIE_NAME, REFRESH_MS } from './session.js';
 import { validateProfile, parseIdentifier, normalizePhone, isEmail, STATES, GENDERS, INTERESTS } from './validate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,10 +31,10 @@ const RESEND_COOLDOWN_MS = 60 * 1000;        // one new code per email/phone per
 // Codes one IP address can request per hour (protects SMS credit). Stored in Postgres.
 const IP_SEND_LIMIT = Number(process.env.OTP_IP_LIMIT_PER_HOUR || 10);
 const IP_WINDOW_MS = 60 * 60 * 1000;
-const COOKIE_NAME = 'sid';
-// Browsers cap cookie lifetime at ~400 days, so the cookie is refreshed on visits.
-// The session itself never expires: only logging out ends it.
-const COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
+// Codes one phone number can be sent per day, sign-in and linking together (each WhatsApp message
+// or call costs money). Stored in Postgres like the per-IP limit.
+const PHONE_SEND_LIMIT = Number(process.env.OTP_PHONE_LIMIT_PER_DAY || 5);
+const PHONE_WINDOW_MS = 24 * 60 * 60 * 1000;
 // Number of reverse proxies in front of the app (Caddy = 1). req.ip comes from X-Forwarded-For.
 const TRUST_PROXY = /^\d+$/.test(process.env.TRUST_PROXY || '1') ? Number(process.env.TRUST_PROXY || 1) : process.env.TRUST_PROXY;
 
@@ -164,61 +165,49 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-function setSessionCookie(res, token) {
-  res.cookie(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: IS_PROD,
-    sameSite: 'lax',
-    maxAge: COOKIE_MAX_AGE_MS,
-    path: '/',
-  });
-}
+const setSessionCookie = (res, token) => res.cookie(COOKIE_NAME, token, cookieOptions(IS_PROD));
 
-// Loads the member from the session cookie (if any) and keeps the cookie fresh.
+// Loads the member from the session cookie (if any) and rolls the cookie (session.js).
 // Static files don't need it, so it only runs for the API.
-app.use('/api', h(async (req, res, next) => {
-  const token = req.cookies[COOKIE_NAME];
-  if (!token) return next();
-  const s = await store.getSession(sha256(token));
-  const member = s && (await store.memberById(s.member_id));
-  if (!member) {
-    res.clearCookie(COOKIE_NAME, { path: '/' });
-    return next();
-  }
-  req.member = member;
-  req.sessionHash = s.token_hash;
-  // Refresh at most once an hour to avoid a write per request.
-  if (Date.now() - s.last_seen > 60 * 60 * 1000) {
-    await store.touchSession(s.token_hash, Date.now());
-    setSessionCookie(res, token);
-  }
-  next();
+const sessionRefresh = Number(process.env.SESSION_REFRESH_MS);
+app.use('/api', sessionMiddleware({
+  store, hash: sha256, secure: IS_PROD,
+  refreshMs: Number.isFinite(sessionRefresh) ? sessionRefresh : REFRESH_MS,
 }));
 
 // Options for the forms, so the browser and server use the same lists.
 app.get('/api/options', (req, res) =>
   res.json({
     states: STATES, genders: GENDERS, interests: INTERESTS, sms: SMS_ENABLED,
-    phoneVia: FIREBASE && !sms.provider ? 'firebase' : 'server',
+    // Firebase Phone Auth wins whenever it is configured, even if Zoho/Termii/etc. env vars are set.
+    phoneVia: FIREBASE ? 'firebase' : 'server',
     turnstile: TURNSTILE ? TURNSTILE.siteKey : null,
+    // How server-sent phone codes travel (unused when phoneVia is firebase).
+    phoneChannels: FIREBASE ? [] : (sms.provider ? (sms.channels || [sms.via || 'sms']) : []),
     firebase: FIREBASE ? { apiKey: FIREBASE.apiKey, authDomain: FIREBASE.authDomain, projectId: FIREBASE.projectId, sdk: FIREBASE.sdk } : null,
   }));
 
 // ---- Sending and checking 6-digit codes (used for sign-in and for linking a contact) ----
 // `key` is where the code is stored: the email/phone itself for sign-in, `link:<member>:<value>` for linking.
-async function sendCode(req, key, id) {
+// `channel` asks for a specific phone channel the provider offers (e.g. 'voice' for "call me instead").
+async function sendCode(req, key, id, channel) {
   const existing = await store.getCode(key);
   const now = Date.now();
   if (existing && now - existing.sent_at < RESEND_COOLDOWN_MS) {
     const wait = Math.ceil((RESEND_COOLDOWN_MS - (now - existing.sent_at)) / 1000);
     return { status: 429, body: { error: `Please wait ${wait}s before requesting another code.`, retryAfter: wait } };
   }
-  if (!(await store.hit(`otp-ip:${req.ip}`, IP_SEND_LIMIT, IP_WINDOW_MS, now))) {
+  if (id.type === 'phone') {
+    const limited = await limitPhone(req, id.value, now);
+    if (limited) return limited;
+  } else if (!(await store.hit(`otp-ip:${req.ip}`, IP_SEND_LIMIT, IP_WINDOW_MS, now))) {
     req.log.warn({ ip: req.ip }, 'per-IP code limit reached');
     return { status: 429, body: { error: 'Too many codes requested from this connection. Try again in an hour.' } };
   }
   const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
   const managed = id.type === 'phone' && sms.managed;     // provider creates and checks the code itself
+  const wanted = id.type === 'phone' && sms.channels?.includes(channel) ? channel : undefined;
+  let via = id.type === 'email' ? 'email' : (sms.via || 'sms');
   try {
     if (managed) {
       const ref = await sms.start(id.value);              // remember the provider's reference, not a code hash
@@ -226,18 +215,18 @@ async function sendCode(req, key, id) {
     } else {
       await store.upsertCode(key, id.type, sha256(`${key}:${code}`), now + CODE_TTL_MS, now);
       if (id.type === 'email') await mailer.send(id.value, code);
-      else await sms.send(id.value, code);
+      else via = (await sms.send(id.value, code, { channel: wanted })) || via;
     }
   } catch (err) {
     req.log.error({ err: err.message, channel: id.type }, 'code send failed');
     await store.deleteCode(key);
     return { status: 502, body: { error: id.type === 'email'
       ? "We couldn't send the email. Check the address and try again shortly."
-      : "We couldn't send the text message. Check the number, or use your email instead." } };
+      : "We couldn't send a code to that number. Check it, or use your email instead." } };
   }
   const body = {
     ok: true, type: id.type, identifier: id.value, sentTo: mask(id), cooldown: RESEND_COOLDOWN_MS / 1000,
-    via: id.type === 'email' ? 'email' : (sms.via || 'sms'),
+    via,
     expiresMinutes: managed ? null : CODE_TTL_MS / 60000,
   };
   // Without a provider in development, hand the code to the UI so the flow can be tested.
@@ -280,6 +269,19 @@ async function checkCode(req, key, id, code) {
     } };
   }
   await store.deleteCode(key);                            // single use
+  return null;
+}
+
+/** Per-IP hourly and per-phone daily caps (sign-in and linking share the phone bucket). */
+async function limitPhone(req, phone, now = Date.now()) {
+  if (!(await store.hit(`otp-ip:${req.ip}`, IP_SEND_LIMIT, IP_WINDOW_MS, now))) {
+    req.log.warn({ ip: req.ip }, 'per-IP code limit reached');
+    return { status: 429, body: { error: 'Too many codes requested from this connection. Try again in an hour.' } };
+  }
+  if (!(await store.hit(`otp-phone:${phone}`, PHONE_SEND_LIMIT, PHONE_WINDOW_MS, now))) {
+    req.log.warn('per-phone daily code limit reached');
+    return { status: 429, body: { error: 'This number has had too many codes today. Try again tomorrow, or use your email instead.', dailyLimit: true } };
+  }
   return null;
 }
 
@@ -331,13 +333,16 @@ app.post('/api/auth/start', h(async (req, res) => {
   if (!id) {
     return res.status(400).json({ error: 'Enter a valid email address or Nigerian phone number (e.g. 0803 123 4567).' });
   }
+  if (id.type === 'phone' && FIREBASE) {
+    return res.status(400).json({ error: 'Phone sign-in uses a text message on this page.', code: 'use_firebase' });
+  }
   if (id.type === 'phone' && !SMS_ENABLED) {
     return res.status(503).json({ error: "Sign-in by phone isn't available yet. Please use your email address.", code: 'sms_off' });
   }
   if (!(await turnstileOk(req.body.turnstile, req.ip))) {
     return res.status(400).json({ error: 'Please complete the security check and try again.', code: 'turnstile' });
   }
-  const { status, body } = await sendCode(req, id.value, id);
+  const { status, body } = await sendCode(req, id.value, id, req.body.channel);
   res.status(status).json(body);
 }));
 
@@ -357,6 +362,8 @@ app.post('/api/auth/verify', h(async (req, res) => {
 app.post('/api/auth/firebase', h(async (req, res) => {
   const { phone, fail } = await phoneFromFirebase(req, req.body.idToken);
   if (fail) return res.status(fail.status).json(fail.body);
+  const limited = await limitPhone(req, phone);
+  if (limited) return res.status(limited.status).json(limited.body);
   await finishSignIn(req, res, 'phone', phone);
 }));
 
@@ -440,8 +447,11 @@ app.post('/api/me/link/start', h(async (req, res) => {
   if ((id.type === 'email' && m.email_verified) || (id.type === 'phone' && m.phone_verified)) {
     return res.status(400).json({ error: `Your account already has a verified ${id.type === 'email' ? 'email' : 'phone number'}.` });
   }
+  if (id.type === 'phone' && FIREBASE) {
+    return res.status(400).json({ error: 'Phone linking uses a text message on this page.', code: 'use_firebase' });
+  }
   if (id.type === 'phone' && !SMS_ENABLED) return res.status(503).json({ error: "Phone codes aren't available yet." });
-  const { status, body } = await sendCode(req, linkKey(m, id), id);
+  const { status, body } = await sendCode(req, linkKey(m, id), id, req.body.channel);
   res.status(status).json(body);
 }));
 
@@ -462,6 +472,8 @@ app.post('/api/me/link/firebase', h(async (req, res) => {
   if (m.phone_verified) return res.status(400).json({ error: 'Your account already has a verified phone number.' });
   const { phone, fail } = await phoneFromFirebase(req, req.body.idToken);
   if (fail) return res.status(fail.status).json(fail.body);
+  const limited = await limitPhone(req, phone);
+  if (limited) return res.status(limited.status).json(limited.body);
   await finishLink(res, m, 'phone', phone);
 }));
 
@@ -505,6 +517,9 @@ app.get(['/join', '/signup'], (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'login.html'), { cacheControl: false });
 });
 app.get('/welcome', (req, res) => res.redirect(302, '/account'));
+// The pages check emails and phone numbers with the same rules as the server.
+app.get('/validate.js', (req, res) => res.type('text/javascript; charset=utf-8').set('Cache-Control', 'no-cache')
+  .sendFile(path.join(__dirname, 'validate.js')));
 app.use(staticFiles(PUBLIC_DIR));
 
 app.use((err, req, res, next) => {
@@ -519,14 +534,14 @@ app.use((err, req, res, next) => {
 const housekeeping = setInterval(() => {
   const now = Date.now();
   store.purgeCodes(now).catch((err) => logger.warn({ err: err.message }, 'purging codes failed'));
-  store.purgeHits(now - IP_WINDOW_MS).catch((err) => logger.warn({ err: err.message }, 'purging rate limits failed'));
+  store.purgeHits(now - Math.max(IP_WINDOW_MS, PHONE_WINDOW_MS)).catch((err) => logger.warn({ err: err.message }, 'purging rate limits failed'));
 }, 15 * 60 * 1000);
 housekeeping.unref();
 
 const server = app.listen(PORT, HOST, () => {
   logger.info({
     port: PORT, db: 'postgres', email: mailer.provider || 'log (dev)',
-    sms: sms.provider || (FIREBASE ? 'firebase' : IS_PROD ? 'off' : 'log (dev)'),
+    sms: FIREBASE ? 'firebase' : (sms.provider || (IS_PROD ? 'off' : 'log (dev)')),
     env: IS_PROD ? 'production' : 'development',
   }, 'PBAT DOOR TO DOOR is running');
 });

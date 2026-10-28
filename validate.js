@@ -1,5 +1,6 @@
 // Server-side validation for the sign-up / profile form.
 // The browser checks the same things, but the server is the one that counts.
+// Also served to the browser as /validate.js (sign-in and account pages), so keep it free of Node imports.
 
 export const STATES = [
   'Abia', 'Adamawa', 'Akwa Ibom', 'Anambra', 'Bauchi', 'Bayelsa', 'Benue', 'Borno', 'Cross River',
@@ -15,11 +16,12 @@ export const INTERESTS = [
 
 const clean = (v, max) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
+/** Nigerian mobile number in any common form (0803…, 803… after a +234 prefix, +234…, 234…) -> +2348031234567. */
 export function normalizePhone(raw) {
   const digits = String(raw || '').replace(/[^\d+]/g, '');
   let m;
-  if ((m = digits.match(/^\+?234([789]\d{9})$/))) return `+234${m[1]}`;
-  if ((m = digits.match(/^0([789]\d{9})$/))) return `+234${m[1]}`;
+  if ((m = digits.match(/^(?:\+|00)?2340?([789]\d{9})$/))) return `+234${m[1]}`;
+  if ((m = digits.match(/^0?([789]\d{9})$/))) return `+234${m[1]}`;
   return null;
 }
 
