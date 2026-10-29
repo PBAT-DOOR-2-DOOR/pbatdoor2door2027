@@ -201,12 +201,13 @@
     if (!ok) $('#agree').focus();
     return ok;
   };
-  const typedIn = () => $('#email').value.trim() !== '' || $('#phone').value.trim() !== '';
-  const syncButtons = () => {
+  // Function declarations (not const) so selectTab() above can call syncButtons() before this line runs.
+  function typedIn() { return $('#email').value.trim() !== '' || $('#phone').value.trim() !== ''; }
+  function syncButtons() {
     const on = $('#agree').checked, typed = typedIn();
     $('#join').setAttribute('aria-disabled', String(!on));
     $('#send').setAttribute('aria-disabled', String(!typed || (joining && !on)));
-  };
+  }
   $('#agree').addEventListener('change', () => { $('[data-field="consent"]').classList.remove('invalid'); syncButtons(); });
   $('#email').addEventListener('input', syncButtons);
   $('#phone').addEventListener('input', syncButtons);
