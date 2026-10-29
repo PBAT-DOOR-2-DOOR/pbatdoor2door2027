@@ -266,6 +266,7 @@ Keeping the server patched: security updates install automatically. For Docker a
 | **Unit tests and lint** | PRs, pushes, manual | `npm ci`, `npm test`, `shellcheck` on the shell scripts. |
 | **Full stack tests (Docker)** | PRs, pushes, manual | `scripts/test-stack.sh` on GitHub's `ubuntu-latest` runner (the whole production stack with mocks; see section 10). |
 | **Deploy to production** | pushes to `main` and manual runs on `main`, only after both test jobs pass | SSHes to the server, which runs `scripts/deploy.sh`; then checks `https://pbatdoor2door2027.org/healthz`. |
+| **Notify owner on failure** | only when a needed job fails (never on green) | Sends a short Telegram message (repo, branch, failed job, run URL) if the Telegram secrets below are set. |
 
 The deploy job uses the GitHub **environment `production`** (add required reviewers there if you want a manual approval step) and a concurrency group, so deploys never overlap or get cancelled half-way; `scripts/deploy.sh` also takes a lock on the server. The job fails if `deploy.sh` exits non-zero (including after a rollback) or if `/healthz` doesn't answer. The server deploys whatever is at the tip of `origin/main` at that moment, which is normally the commit that was just tested.
 
@@ -297,6 +298,15 @@ The deploy job uses the GitHub **environment `production`** (add required review
    Then delete the local private key. Test with `ssh -i pbat_ci_deploy user1@172.237.115.143` before deleting it if you like (it runs a deploy).
 
 Until these secrets exist, the deploy job fails with "Secret … is not set"; the test jobs are unaffected. To stop automatic deploys, remove the `authorized_keys` line (or the secrets).
+
+**Telegram alerts (optional).** On failure of **Unit tests and lint**, **Full stack tests (Docker)** (on a pull request or a push to `main`), or **Deploy to production**, the **Notify owner on failure** job sends a short Telegram message with the repo, branch, failed job name, and the Actions run URL. Green runs do not notify. Add these **repository secrets** (Settings → Secrets and variables → Actions), not the `production` environment:
+
+| Secret | Value |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_CHAT_ID` | Numeric chat (or group) id that should receive the alerts |
+
+Until they are set, the notify job is skipped and CI stays green.
 
 ---
 
