@@ -1,0 +1,24 @@
+# Extra site on the shared Caddy. App: second compose project at /opt/zoni, port 3100.
+# Cloudflare DNS for this name must be grey (DNS only) so HTTP-01 certificates work.
+# Orange proxy later only with PROXY_MODE=cloudflare (CF-Connecting-IP).
+zoni.pbatdoor2door2027.org {
+	request_body {
+		max_size 10MB
+	}
+
+	reverse_proxy 127.0.0.1:3100 {
+		header_up X-Forwarded-For {client_ip}
+		header_up -CF-Connecting-IP
+		transport http {
+			dial_timeout 5s
+			keepalive 30s
+		}
+	}
+
+	header -Server
+
+	log {
+		output stdout
+		format json
+	}
+}

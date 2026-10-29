@@ -37,3 +37,8 @@ www.{$SITE_DOMAIN} {
 		format json
 	}
 }
+
+# Second hostname: Zoni payroll on 127.0.0.1:3100 (compose project /opt/zoni).
+# Must stay Cloudflare DNS-only (grey) for Let's Encrypt. Do not raise the 1MB
+# body limit on the PBAT site above — receipts for Zoni are allowed in zoni.caddy.
+import zoni.caddy
