@@ -7,7 +7,7 @@
 // - Sign-in and account data (/api): never saved; always live.
 //
 // Bump VERSION when you change the list below; old saved copies are then cleared.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = `pbat-shell-${VERSION}`;
 const RUNTIME = `pbat-runtime-${VERSION}`;
 const GEO = 'pbat-geo-v1';
