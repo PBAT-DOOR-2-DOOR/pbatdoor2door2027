@@ -8,7 +8,7 @@ export const SITE = {
   privacyEmail: 'privacy@pbatdoor2door2027.org',    // where people send data requests (can be the same as email)
   phone: '',                                        // optional public phone / volunteer hotline, e.g. '0800 000 0000'
   domain: 'https://pbatdoor2door2027.org',
-  policyDate: '28 October 2026',                    // date the Privacy Policy and Terms were last updated
+  policyDate: '4 November 2026',                    // date the Privacy Policy and Terms were last updated
 };
 
 /** Fill every element marked data-site="key" (text) or data-site-mail="key" (mailto link). */

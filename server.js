@@ -16,6 +16,7 @@ import { loadGeoIndex, nearest } from './geo.js';
 import { securityHeaders } from './security.js';
 import { staticFiles } from './static.js';
 import { sessionMiddleware, cookieOptions, COOKIE_NAME, REFRESH_MS } from './session.js';
+import { createGoogle, STATE_COOKIE, googleErrorRedirect } from './google.js';
 import { validateProfile, parseIdentifier, normalizePhone, isEmail, STATES, GENDERS, INTERESTS } from './validate.js';
 import { mountVolunteer, createRoleOf } from './volunteer.js';
 
@@ -58,6 +59,8 @@ const FIREBASE = process.env.FIREBASE_API_KEY && process.env.FIREBASE_PROJECT_ID
 const firebaseKeys = FIREBASE && createRemoteJWKSet(new URL(process.env.FIREBASE_JWKS_URL
   || 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com'));
 const SMS_ENABLED = Boolean(FIREBASE || sms.provider) || !IS_PROD;
+// Public Google sign-in: any Google account. No invite list (unlike Zoni).
+const google = createGoogle();
 // Optional Cloudflare Turnstile (bot check) on code requests: set both keys to switch it on.
 const TURNSTILE = process.env.TURNSTILE_SITE_KEY && process.env.TURNSTILE_SECRET_KEY
   ? { siteKey: process.env.TURNSTILE_SITE_KEY.trim(), secret: process.env.TURNSTILE_SECRET_KEY.trim() } : null;
@@ -195,6 +198,7 @@ app.get('/api/options', (req, res) =>
     // How server-sent phone codes travel (unused when phoneVia is firebase).
     phoneChannels: FIREBASE ? [] : (sms.provider ? (sms.channels || [sms.via || 'sms']) : []),
     firebase: FIREBASE ? { apiKey: FIREBASE.apiKey, authDomain: FIREBASE.authDomain, projectId: FIREBASE.projectId, sdk: FIREBASE.sdk } : null,
+    google: google.enabled,
   }));
 
 // ---- Sending and checking 6-digit codes (used for sign-in and for linking a contact) ----
@@ -314,11 +318,15 @@ async function phoneFromFirebase(req, idToken) {
   return { phone };
 }
 
-async function startSession(req, res, member, isNew) {
+async function issueSession(req, res, member) {
   const now = Date.now();
   const token = crypto.randomBytes(32).toString('base64url');
   await store.insertSession(sha256(token), member.id, now, String(req.get('user-agent') || '').slice(0, 200));
   setSessionCookie(res, token);
+}
+
+async function startSession(req, res, member, isNew) {
+  await issueSession(req, res, member);
   res.json({ member: await memberJson(member), isNew, needsProfile: !member.consent_at });
 }
 
@@ -375,6 +383,57 @@ app.post('/api/auth/firebase', h(async (req, res) => {
   const limited = await limitPhone(req, phone);
   if (limited) return res.status(limited.status).json(limited.body);
   await finishSignIn(req, res, 'phone', phone);
+}));
+
+// Public Google sign-in (same UX as Zoni: button → Google → callback sets the session).
+// Anyone with a Google account can join; there is no invite allow-list.
+app.get('/api/auth/google', (req, res) => {
+  if (!google.enabled) return res.redirect(302, googleErrorRedirect('off'));
+  const consent = req.query.consent === '1' || req.query.consent === 'true';
+  const sms = req.query.sms === '1' || req.query.sms === 'true';
+  const { nonce, state } = google.issueState({ consent, sms });
+  res.cookie(STATE_COOKIE, nonce, google.cookieOptions(IS_PROD));
+  res.redirect(302, google.authorizationUrl(state));
+});
+
+app.get('/api/auth/google/callback', h(async (req, res) => {
+  const clearState = () => res.clearCookie(STATE_COOKIE, { path: '/' });
+  if (!google.enabled) {
+    clearState();
+    return res.redirect(302, googleErrorRedirect('off'));
+  }
+  if (req.query.error === 'access_denied') {
+    clearState();
+    return res.redirect(302, googleErrorRedirect('denied'));
+  }
+  const parsed = google.readState(req.query.state, req.cookies?.[STATE_COOKIE]);
+  if (!parsed) {
+    clearState();
+    return res.redirect(302, googleErrorRedirect('mismatch'));
+  }
+  if (!req.query.code) {
+    clearState();
+    return res.redirect(302, googleErrorRedirect('failed'));
+  }
+  let profile;
+  try {
+    profile = await google.exchangeCode(req.query.code);
+  } catch (err) {
+    req.log.warn({ err: err.message }, 'Google token exchange failed');
+    clearState();
+    return res.redirect(302, googleErrorRedirect('failed'));
+  }
+  clearState();
+  if (!profile.verified) return res.redirect(302, googleErrorRedirect('unverified'));
+  const existing = await store.memberByVerified('email', profile.email);
+  if (!existing && !parsed.consent) {
+    return res.redirect(302, `/login?google_pending=${encodeURIComponent(pendingToken('email', profile.email))}`);
+  }
+  const now = Date.now();
+  const { member, isNew } = await store.signInWith('email', profile.email, now);
+  if (parsed.consent) await store.recordConsent(member.id, now, parsed.sms);
+  await issueSession(req, res, member);
+  res.redirect(302, isNew ? '/account?welcome=1' : '/account');
 }));
 
 // A new person who came in through "Log in" has proved their email/phone and now ticked the box.
@@ -594,6 +653,7 @@ const server = app.listen(PORT, HOST, () => {
   logger.info({
     port: PORT, db: 'postgres', email: mailer.provider || 'log (dev)',
     sms: FIREBASE ? 'firebase' : (sms.provider || (IS_PROD ? 'off' : 'log (dev)')),
+    google: google.enabled ? 'public' : 'off',
     env: IS_PROD ? 'production' : 'development',
   }, 'PBAT DOOR TO DOOR is running');
 });

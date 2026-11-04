@@ -1,6 +1,7 @@
-// Stand-in for Brevo (email), Firebase Phone Auth (JWKS + test ID tokens), Zoho CPaaS and
-// DageSMS during the stack tests. The app runs with its production configuration; tests mint a
-// Firebase ID token from POST /firebase/token and read email codes from GET /codes?to=…
+// Stand-in for Brevo (email), Firebase Phone Auth (JWKS + test ID tokens), Google OAuth
+// (token + userinfo), Zoho CPaaS and DageSMS during the stack tests. The app runs with its
+// production configuration; tests mint a Firebase ID token from POST /firebase/token, exchange a
+// Google code at POST /google/token, and read email codes from GET /codes?to=…
 import http from 'node:http';
 import crypto from 'node:crypto';
 
@@ -29,11 +30,37 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ keys: [jwk] }));
   }
+  if (req.method === 'GET' && url.pathname === '/google/userinfo') {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    const raw = token.startsWith('tok:') ? token.slice(4) : '';
+    const sep = raw.indexOf(':');
+    const kind = sep === -1 ? raw : raw.slice(0, sep);
+    const email = sep === -1 ? '' : raw.slice(sep + 1);
+    if ((kind === 'ok' || kind === 'unverified') && email.includes('@')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ email, verified_email: kind === 'ok', name: 'Google Tester' }));
+    }
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    return res.end('{}');
+  }
   let body = '';
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     let j = {};
-    try { j = JSON.parse(body); } catch {}
+    const ct = String(req.headers['content-type'] || '');
+    if (ct.includes('application/x-www-form-urlencoded')) j = Object.fromEntries(new URLSearchParams(body));
+    else try { j = JSON.parse(body); } catch {}
+    if (url.pathname === '/google/token') {
+      const code = String(j.code || '');
+      const okClient = j.client_id && j.client_secret && j.grant_type === 'authorization_code' && j.redirect_uri;
+      if (!okClient || !code || code === 'fail') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'invalid_grant' }));
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ access_token: `tok:${code}`, token_type: 'Bearer' }));
+    }
     if (url.pathname === '/firebase/token') {
       const phone = String(j.phone || '');
       const now = Math.floor(Date.now() / 1000);

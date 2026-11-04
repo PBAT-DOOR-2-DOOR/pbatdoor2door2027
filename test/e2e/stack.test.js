@@ -26,31 +26,36 @@ const randomPhone = () => {
 const randomIp = () => `198.51.100.${crypto.randomInt(1, 254)}`;
 const toE164 = (p) => `+234${p.slice(1)}`;
 
-/** A browser-like client with its own cookie jar. */
+/** A browser-like client with its own cookie jar (sid plus the Google OAuth state cookie). */
 function client(base = SITE, extraHeaders = {}) {
-  let sid = null;
+  const jar = new Map();
   const c = {
     lastSetCookie: null,
-    get sid() { return sid; },
-    set sid(v) { sid = v; },
+    get sid() { return jar.get('sid') || null; },
+    set sid(v) { if (v) jar.set('sid', v); else jar.delete('sid'); },
+    cookie: (name) => jar.get(name) || null,
     async req(method, path, body, headers = {}) {
+      const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
       const res = await fetch(base + path, {
         method,
         redirect: 'manual',
         headers: {
           'User-Agent': 'pbat-e2e',
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-          ...(sid ? { Cookie: `sid=${sid}` } : {}),
+          ...(cookie ? { Cookie: cookie } : {}),
           ...extraHeaders, ...headers,
         },
         body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
       });
-      const sets = res.headers.getSetCookie().filter((h) => h.startsWith('sid='));
-      if (sets.length) {
-        const set = sets[sets.length - 1]; // last Set-Cookie for sid wins, as in a browser
-        c.lastSetCookie = set;
-        const v = set.slice(4, set.indexOf(';'));
-        sid = v && !/Expires=Thu, 01 Jan 1970/i.test(set) ? v : null;
+      for (const set of res.headers.getSetCookie()) {
+        const eq = set.indexOf('=');
+        if (eq < 0) continue;
+        const name = set.slice(0, eq);
+        const value = set.slice(eq + 1, set.indexOf(';') === -1 ? undefined : set.indexOf(';'));
+        const expired = /Expires=Thu, 01 Jan 1970/i.test(set) || /Max-Age=0/i.test(set);
+        if (name === 'sid') c.lastSetCookie = set;
+        if (expired || value === '') jar.delete(name);
+        else jar.set(name, value);
       }
       const text = await res.text();
       let data = null;
@@ -174,6 +179,7 @@ if (PHASE === 'main') {
     assert.equal(data.firebase.projectId, 'pbat-test');
     assert.equal(data.firebase.apiKey, 'test-firebase-key');
     assert.match(data.firebase.sdk, /gstatic\.com\/firebasejs/);
+    assert.equal(data.google, true, 'public Google sign-in is advertised when configured');
   });
 
   test('API input checks', async () => {
@@ -293,6 +299,97 @@ if (PHASE === 'main') {
     assert.equal(r.status, 200);
     assert.match(r.headers.get('content-type'), /javascript/);
     assert.match(r.text, /export function normalizePhone/);
+  });
+
+  async function startGoogle(c, qs = '') {
+    const r = await c.get(`/api/auth/google${qs}`);
+    assert.equal(r.status, 302, r.text);
+    const loc = r.headers.get('location');
+    assert.ok(loc, 'Google start must redirect');
+    return { start: r, loc, state: new URL(loc).searchParams.get('state') };
+  }
+
+  test('Google sign-in: start redirects to Google, callback is public, session after consent', async () => {
+    const login = await client().get('/login');
+    assert.match(login.text, /Continue with Google/);
+    assert.match(login.text, /\/api\/auth\/google/);
+
+    const stranger = `stranger-${rnd()}@gmail.com`;
+    const c = client();
+    const { loc, state } = await startGoogle(c, '?consent=1');
+    const dest = new URL(loc);
+    assert.equal(dest.origin, 'https://accounts.google.com');
+    assert.equal(dest.pathname, '/o/oauth2/v2/auth');
+    assert.equal(dest.searchParams.get('client_id'), 'pbat-test-google-client');
+    assert.equal(dest.searchParams.get('redirect_uri'), `${SITE}/api/auth/google/callback`);
+    assert.equal(dest.searchParams.get('response_type'), 'code');
+    assert.match(dest.searchParams.get('scope'), /email/);
+    assert.ok(state);
+    assert.ok(c.cookie('gostate'), 'OAuth state cookie');
+    assert.equal(c.sid, null);
+
+    const denied = await c.get(`/api/auth/google/callback?error=access_denied&state=${encodeURIComponent(state)}`);
+    assert.equal(denied.status, 302);
+    assert.match(denied.headers.get('location'), /google_error=denied/);
+    assert.equal(c.sid, null);
+
+    const { state: state2 } = await startGoogle(c, '?consent=1');
+    const bad = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${stranger}`)}&state=not-the-state`);
+    assert.equal(bad.status, 302);
+    assert.match(bad.headers.get('location'), /google_error=mismatch/);
+    assert.equal(c.sid, null);
+
+    const { state: state3 } = await startGoogle(c, '?consent=1');
+    const unverified = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`unverified:${stranger}`)}&state=${encodeURIComponent(state3)}`);
+    assert.equal(unverified.status, 302);
+    assert.match(unverified.headers.get('location'), /google_error=unverified/);
+    assert.equal(c.sid, null);
+
+    const { state: state4 } = await startGoogle(c, '?consent=1');
+    const ok = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${stranger}`)}&state=${encodeURIComponent(state4)}`);
+    assert.equal(ok.status, 302, ok.text);
+    assert.equal(ok.headers.get('location'), '/account?welcome=1');
+    assert.ok(c.sid, 'session cookie after Google callback');
+    assert.match(c.lastSetCookie, /HttpOnly/i);
+    assert.match(c.lastSetCookie, /Secure/i);
+    assert.match(c.lastSetCookie, /SameSite=Lax/i);
+    assert.match(c.lastSetCookie, /Max-Age=34560000/i);
+    assert.equal(c.cookie('gostate'), null, 'state cookie is cleared');
+
+    const me = await c.get('/api/me');
+    assert.equal(me.status, 200, me.text);
+    assert.equal(me.data.member.email, stranger);
+    assert.equal(me.data.member.emailVerified, true);
+    assert.equal(me.data.member.profileComplete, false);
+
+    const again = client();
+    const { state: state5 } = await startGoogle(again);
+    const back = await again.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${stranger}`)}&state=${encodeURIComponent(state5)}`);
+    assert.equal(back.status, 302, back.text);
+    assert.equal(back.headers.get('location'), '/account');
+    const me2 = await again.get('/api/me');
+    assert.equal(me2.data.member.email, stranger);
+    assert.equal(me2.data.member.emailVerified, true);
+  });
+
+  test('Google sign-in from Log in asks a new person to agree; any Google email works', async () => {
+    const email = `public-${rnd()}@gmail.com`;
+    const c = client();
+    const { state } = await startGoogle(c);
+    const cb = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${email}`)}&state=${encodeURIComponent(state)}`);
+    assert.equal(cb.status, 302, cb.text);
+    const next = new URL(cb.headers.get('location'), SITE);
+    assert.equal(next.pathname, '/login');
+    const pending = next.searchParams.get('google_pending');
+    assert.ok(pending, 'new Google member without consent gets a pending token');
+    assert.equal(c.sid, null);
+
+    const join = await c.post('/api/auth/join', { pending, consent: true });
+    assert.equal(join.status, 200, join.text);
+    assert.equal(join.data.isNew, true);
+    assert.equal(join.data.member.email, email);
+    assert.equal(join.data.member.emailVerified, true);
+    assert.ok(c.sid);
   });
 
   test('phone sign-in through Firebase (local 080… format)', async () => {

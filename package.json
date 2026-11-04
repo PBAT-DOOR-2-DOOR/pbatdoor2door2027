@@ -2,7 +2,7 @@
   "name": "pbat-door-to-door",
   "version": "2.0.0",
   "private": true,
-  "description": "PBAT DOOR TO DOOR volunteer website with email/phone-code sign-up and login.",
+  "description": "PBAT DOOR TO DOOR volunteer website with email, phone-code, and public Google sign-up and login.",
   "main": "server.js",
   "type": "module",
   "engines": {
