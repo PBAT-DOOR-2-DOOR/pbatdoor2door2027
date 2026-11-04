@@ -505,7 +505,9 @@ if (PHASE === 'main') {
     assert.equal(meB.data.member.email, emailA);
     const viaPhone = await signInPhone(client(), phoneB);
     assert.equal(viaPhone.member.email, emailA);
-    assert.equal((await devA1.get('/api/me')).data.sessions.length, 4);
+    // Ada: email join + second device + two Google logins (existing email, colliding
+    // phone hop) + Bayo's moved session + this phone sign-in.
+    assert.equal((await devA1.get('/api/me')).data.sessions.length, 6);
   });
 
   test('per-phone daily cap covers Firebase sign-in and linking, from any connection', async () => {
