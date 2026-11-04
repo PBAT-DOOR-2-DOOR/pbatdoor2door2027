@@ -16,7 +16,7 @@ import { loadGeoIndex, nearest } from './geo.js';
 import { securityHeaders } from './security.js';
 import { staticFiles } from './static.js';
 import { sessionMiddleware, cookieOptions, COOKIE_NAME, REFRESH_MS } from './session.js';
-import { createGoogle, STATE_COOKIE, googleErrorRedirect } from './google.js';
+import { createGoogle, STATE_COOKIE, googleErrorRedirect, parseGoogleProfile } from './google.js';
 import { validateProfile, parseIdentifier, normalizePhone, isEmail, STATES, GENDERS, INTERESTS } from './validate.js';
 import { mountVolunteer, createRoleOf } from './volunteer.js';
 
@@ -89,12 +89,39 @@ function pendingToken(type, value) {
   const p = `${type}|${value}|${Date.now() + PENDING_MS}`;
   return `${Buffer.from(p).toString('base64url')}.${signPending(p)}`;
 }
+function pendingGoogleToken(profile) {
+  const safe = {
+    email: profile.email, id: profile.id, name: profile.name,
+    givenName: profile.givenName, familyName: profile.familyName,
+    picture: profile.picture, locale: profile.locale, hd: profile.hd,
+  };
+  const payload = Buffer.from(JSON.stringify(safe)).toString('base64url');
+  const p = `google|${profile.email}|${Date.now() + PENDING_MS}|${payload}`;
+  return `${Buffer.from(p).toString('base64url')}.${signPending(p)}`;
+}
 function readPending(token) {
   const [b, sig] = String(token || '').split('.');
   if (!b || !sig) return null;
   const p = Buffer.from(b, 'base64url').toString();
   if (!safeEqual(sig, signPending(p))) return null;
-  const [type, value, exp] = p.split('|');
+  const parts = p.split('|');
+  if (parts[0] === 'google') {
+    const [, value, exp, payload] = parts;
+    if (!value || !(Number(exp) > Date.now()) || !payload) return null;
+    let raw;
+    try { raw = JSON.parse(Buffer.from(payload, 'base64url').toString()); } catch { return null; }
+    if (!raw || String(raw.email || '').toLowerCase() !== value) return null;
+    return {
+      type: 'google',
+      value,
+      profile: parseGoogleProfile({
+        email: raw.email, verified_email: true, id: raw.id, name: raw.name,
+        given_name: raw.givenName, family_name: raw.familyName,
+        picture: raw.picture, locale: raw.locale, hd: raw.hd,
+      }),
+    };
+  }
+  const [type, value, exp] = parts;
   if (!['email', 'phone'].includes(type) || !(Number(exp) > Date.now())) return null;
   return { type, value };
 }
@@ -119,6 +146,12 @@ const publicMember = (m) => {
     phone: m.phone || '', phoneVerified: Boolean(m.phone_verified),
     createdAt: m.created_at,
     profileComplete: Boolean(m.consent_at),
+    picture: m.google_picture || '',
+    givenName: m.given_name || '',
+    familyName: m.family_name || '',
+    locale: m.locale || '',
+    hd: m.hd || '',
+    googleLinked: Boolean(m.google_id),
   };
   for (const f of PROFILE_FIELDS) out[f] = m[f];
   out.interests = m.interests ? m.interests.split(', ') : [];
@@ -388,52 +421,47 @@ app.post('/api/auth/firebase', h(async (req, res) => {
 // Public Google sign-in (same UX as Zoni: button → Google → callback sets the session).
 // Anyone with a Google account can join; there is no invite allow-list.
 app.get('/api/auth/google', (req, res) => {
-  if (!google.enabled) return res.redirect(302, googleErrorRedirect('off'));
+  const from = req.query.from === 'join' ? 'join' : 'login';
+  if (!google.enabled) return res.redirect(302, googleErrorRedirect('off', from));
   const consent = req.query.consent === '1' || req.query.consent === 'true';
   const sms = req.query.sms === '1' || req.query.sms === 'true';
-  const { nonce, state } = google.issueState({ consent, sms });
+  const { nonce, state } = google.issueState({ consent, sms, from });
   res.cookie(STATE_COOKIE, nonce, google.cookieOptions(IS_PROD));
   res.redirect(302, google.authorizationUrl(state));
 });
 
 app.get('/api/auth/google/callback', h(async (req, res) => {
   const clearState = () => res.clearCookie(STATE_COOKIE, { path: '/' });
-  if (!google.enabled) {
+  const fail = (code, from = 'login') => {
     clearState();
-    return res.redirect(302, googleErrorRedirect('off'));
-  }
+    return res.redirect(302, googleErrorRedirect(code, from));
+  };
+  if (!google.enabled) return fail('off');
   if (req.query.error === 'access_denied') {
-    clearState();
-    return res.redirect(302, googleErrorRedirect('denied'));
+    const early = google.readState(req.query.state, req.cookies?.[STATE_COOKIE]);
+    return fail('denied', early?.from);
   }
   const parsed = google.readState(req.query.state, req.cookies?.[STATE_COOKIE]);
-  if (!parsed) {
-    clearState();
-    return res.redirect(302, googleErrorRedirect('mismatch'));
-  }
-  if (!req.query.code) {
-    clearState();
-    return res.redirect(302, googleErrorRedirect('failed'));
-  }
+  if (!parsed) return fail('mismatch');
+  if (!req.query.code) return fail('failed', parsed.from);
   let profile;
   try {
     profile = await google.exchangeCode(req.query.code);
   } catch (err) {
     req.log.warn({ err: err.message }, 'Google token exchange failed');
-    clearState();
-    return res.redirect(302, googleErrorRedirect('failed'));
+    return fail('failed', parsed.from);
   }
   clearState();
-  if (!profile.verified) return res.redirect(302, googleErrorRedirect('unverified'));
-  const existing = await store.memberByVerified('email', profile.email);
-  if (!existing && !parsed.consent) {
-    return res.redirect(302, `/login?google_pending=${encodeURIComponent(pendingToken('email', profile.email))}`);
-  }
+  if (!profile.verified) return res.redirect(302, googleErrorRedirect('unverified', parsed.from));
   const now = Date.now();
-  const { member, isNew } = await store.signInWith('email', profile.email, now);
-  if (parsed.consent) await store.recordConsent(member.id, now, parsed.sms);
-  await issueSession(req, res, member);
-  res.redirect(302, isNew ? '/account?welcome=1' : '/account');
+  const result = await store.resolveGoogleSignIn(profile, req.member, { consent: parsed.consent, now });
+  if (result.needsConsent) {
+    const dest = parsed.from === 'join' ? '/join' : '/login';
+    return res.redirect(302, `${dest}?google_pending=${encodeURIComponent(pendingGoogleToken(profile))}`);
+  }
+  if (parsed.consent) await store.recordConsent(result.member.id, now, parsed.sms);
+  await issueSession(req, res, result.member);
+  res.redirect(302, result.isNew ? '/account?welcome=1' : '/account');
 }));
 
 // A new person who came in through "Log in" has proved their email/phone and now ticked the box.
@@ -441,6 +469,13 @@ app.post('/api/auth/join', h(async (req, res) => {
   const p = readPending(req.body.pending);
   if (!p) return res.status(400).json({ error: 'That took too long. Please start again.', restart: true });
   if (req.body.consent !== true) return res.status(400).json(CONSENT_ERROR);
+  if (p.type === 'google') {
+    const now = Date.now();
+    const { member, isNew } = await store.resolveGoogleSignIn(p.profile, req.member, { consent: true, now });
+    await store.recordConsent(member.id, now, req.body.sms === true);
+    await startSession(req, res, member, isNew);
+    return;
+  }
   await finishSignIn(req, res, p.type, p.value);
 }));
 

@@ -10,7 +10,9 @@ export const PROFILE_FIELDS = [
   'polling_unit', 'address', 'occupation', 'interests',
 ];
 
-const MEMBER_COLS = `id, email, email_verified, phone, phone_verified, ${PROFILE_FIELDS.join(', ')}, consent_at, join_consent_at, sms_consent_at, created_at`;
+export const GOOGLE_FIELDS = ['google_id', 'google_picture', 'given_name', 'family_name', 'locale', 'hd'];
+
+const MEMBER_COLS = `id, email, email_verified, phone, phone_verified, ${PROFILE_FIELDS.join(', ')}, ${GOOGLE_FIELDS.join(', ')}, consent_at, join_consent_at, sms_consent_at, created_at`;
 
 const QUERIES = {
   getCode: 'SELECT * FROM otp_codes WHERE identifier = $1',
@@ -24,6 +26,7 @@ const QUERIES = {
 
   memberByVerifiedEmail: `SELECT ${MEMBER_COLS} FROM members WHERE email = $1 AND email_verified = 1`,
   memberByVerifiedPhone: `SELECT ${MEMBER_COLS} FROM members WHERE phone = $1 AND phone_verified = 1`,
+  memberByGoogleId: `SELECT ${MEMBER_COLS} FROM members WHERE google_id = $1`,
   memberById: `SELECT ${MEMBER_COLS} FROM members WHERE id = $1`,
   memberByIdForUpdate: `SELECT ${MEMBER_COLS} FROM members WHERE id = $1 FOR UPDATE`,
   // When someone proves they own a contact, remove it from any account that only typed it in.
@@ -39,10 +42,21 @@ const QUERIES = {
   deleteMember: 'DELETE FROM members WHERE id = $1',
   mergeInto: `UPDATE members SET email = $2, email_verified = $3, phone = $4, phone_verified = $5,
                 ${PROFILE_FIELDS.map((f, i) => `${f} = $${i + 6}`).join(', ')},
-                consent_at = $${PROFILE_FIELDS.length + 6},
-                join_consent_at = $${PROFILE_FIELDS.length + 7},
-                sms_consent_at = $${PROFILE_FIELDS.length + 8},
-                created_at = $${PROFILE_FIELDS.length + 9} WHERE id = $1`,
+                ${GOOGLE_FIELDS.map((f, i) => `${f} = $${PROFILE_FIELDS.length + 6 + i}`).join(', ')},
+                consent_at = $${PROFILE_FIELDS.length + GOOGLE_FIELDS.length + 6},
+                join_consent_at = $${PROFILE_FIELDS.length + GOOGLE_FIELDS.length + 7},
+                sms_consent_at = $${PROFILE_FIELDS.length + GOOGLE_FIELDS.length + 8},
+                created_at = $${PROFILE_FIELDS.length + GOOGLE_FIELDS.length + 9} WHERE id = $1`,
+  clearGoogleId: 'UPDATE members SET google_id = NULL WHERE google_id = $1 AND id <> $2',
+  applyGoogle: `UPDATE members SET
+                  google_id = CASE WHEN $2 <> '' THEN $2 ELSE google_id END,
+                  google_picture = CASE WHEN $3 <> '' THEN $3 ELSE google_picture END,
+                  given_name = CASE WHEN given_name = '' AND $4 <> '' THEN $4 ELSE given_name END,
+                  family_name = CASE WHEN family_name = '' AND $5 <> '' THEN $5 ELSE family_name END,
+                  full_name = CASE WHEN full_name = '' AND $6 <> '' THEN $6 ELSE full_name END,
+                  locale = CASE WHEN locale = '' AND $7 <> '' THEN $7 ELSE locale END,
+                  hd = CASE WHEN hd = '' AND $8 <> '' THEN $8 ELSE hd END
+                WHERE id = $1`,
   updateProfile: `UPDATE members SET ${PROFILE_FIELDS.map((f, i) => `${f} = $${i + 2}`).join(', ')},
                     consent_at = COALESCE(consent_at, $${PROFILE_FIELDS.length + 2}) WHERE id = $1`,
   recordConsent: `UPDATE members SET join_consent_at = COALESCE(join_consent_at, $2),
@@ -155,6 +169,22 @@ export function createStore(pool) {
     }
   }
 
+  async function applyGoogleProfile(memberId, profile, db = pool) {
+    const gid = String(profile?.id || '').trim();
+    if (gid) await q('clearGoogleId', [gid, memberId], db);
+    await q('applyGoogle', [
+      memberId,
+      gid,
+      String(profile?.picture || ''),
+      String(profile?.givenName || ''),
+      String(profile?.familyName || ''),
+      String(profile?.name || ''),
+      String(profile?.locale || ''),
+      String(profile?.hd || ''),
+    ], db);
+    return one('memberById', [memberId], db);
+  }
+
   return {
     ping: () => pool.query('SELECT 1'),
 
@@ -246,12 +276,79 @@ export function createStore(pool) {
       await q('deleteMember', [drop.id], c);                    // frees its verified contacts for the keeper
       await q('mergeInto', [keep.id, email[0], email[1], phone[0], phone[1],
         ...PROFILE_FIELDS.map((f) => keep[f] || drop[f] || ''),
+        ...GOOGLE_FIELDS.map((f) => keep[f] || drop[f] || ''),
         consents.length ? Math.min(...consents) : null,
         joinConsents.length ? Math.min(...joinConsents) : null,
         smsConsents.length ? Math.min(...smsConsents) : null,
         Math.min(keep.created_at, drop.created_at)], c);
       return { memberId: keep.id, merged: true };
     }),
+
+    /**
+     * Persist Google profile fields. google_id and picture update when Google sends them;
+     * given/family/full name, locale and hd fill only when the member left them blank.
+     */
+    applyGoogleProfile: (memberId, profile, db) => applyGoogleProfile(memberId, profile, db || pool),
+
+    /**
+     * Google email is the unique key (case-insensitive; stored lowercased).
+     * Existing email → that member (link google_id). Phone-only session with a free
+     * email → attach. Signed-in session with matching email or no email → same member.
+     * Brand-new Google users need consent before an account is created.
+     */
+    async resolveGoogleSignIn(profile, sessionMember, { consent = false, now = Date.now() } = {}) {
+      const email = String(profile?.email || '').trim().toLowerCase();
+      if (!email || !email.includes('@')) {
+        const err = new Error('google_no_email');
+        err.code = 'google_no_email';
+        throw err;
+      }
+      return tx(async (c) => {
+        const byGoogle = profile.id ? await one('memberByGoogleId', [profile.id], c) : null;
+        const byEmail = await byVerified('email', email, c);
+        const session = sessionMember?.id ? await one('memberByIdForUpdate', [sessionMember.id], c) : null;
+        const attachEmail = async (member) => {
+          await q('releaseUnverifiedEmail', [email], c);
+          await q('linkEmail', [member.id, email], c);
+        };
+        const done = async (member, isNew) => ({
+          member: await applyGoogleProfile(member.id, profile, c),
+          isNew,
+          needsConsent: false,
+        });
+
+        if (session) {
+          const sessionEmail = String(session.email || '').trim().toLowerCase();
+          const emailMatch = Boolean(sessionEmail && sessionEmail === email);
+          const noEmail = !sessionEmail;
+          if (emailMatch || (noEmail && !byEmail)) {
+            if (noEmail) await attachEmail(session);
+            return done(session, false);
+          }
+          if (noEmail && byEmail) return done(byEmail, false);
+        }
+
+        if (byGoogle) {
+          const gEmail = String(byGoogle.email || '').trim().toLowerCase();
+          if (!gEmail && byEmail && byEmail.id !== byGoogle.id) return done(byEmail, false);
+          if (!gEmail && !byEmail) await attachEmail(byGoogle);
+          return done(byGoogle, false);
+        }
+        if (byEmail) return done(byEmail, false);
+        if (!consent) return { member: null, isNew: true, needsConsent: true };
+
+        await q('releaseUnverifiedEmail', [email], c);
+        try {
+          const member = await one('insertByEmail', [email, now], c);
+          return done(member, true);
+        } catch (err) {
+          if (err.code !== '23505') throw err;
+          const winner = await byVerified('email', email, c);
+          if (winner) return done(winner, false);
+          throw err;
+        }
+      });
+    },
 
     recordConsent: (id, now, sms) => q('recordConsent', [id, now, sms ? 1 : 0]),
 

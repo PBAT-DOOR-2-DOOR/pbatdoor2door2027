@@ -83,5 +83,6 @@ test('CSP allows the Firebase SDK and reCAPTCHA when Firebase is configured', ()
   assert.match(csp, /https:\/\/www\.google\.com/);
   assert.match(csp, /https:\/\/recaptcha\.google\.com/);
   assert.match(csp, /https:\/\/identitytoolkit\.googleapis\.com/);
+  assert.match(csp, /googleusercontent\.com/);
   assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/);
 });

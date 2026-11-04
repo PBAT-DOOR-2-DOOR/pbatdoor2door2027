@@ -15,8 +15,39 @@ export function googleEnabled(env = process.env) {
   return Boolean(trim(env.GOOGLE_CLIENT_ID) && trim(env.GOOGLE_CLIENT_SECRET) && trim(env.GOOGLE_REDIRECT_URI));
 }
 
-export function googleErrorRedirect(code) {
-  return `/login?google_error=${encodeURIComponent(code)}`;
+export function googleErrorRedirect(code, from = 'login') {
+  const path = from === 'join' ? '/join' : '/login';
+  return `${path}?google_error=${encodeURIComponent(code)}`;
+}
+
+/** Only https Google-hosted profile photos (CSP + no open redirect). */
+export function safePicture(url) {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'https:') return '';
+    if (!/(^|\.)googleusercontent\.com$/i.test(u.hostname)) return '';
+    return u.href;
+  } catch {
+    return '';
+  }
+}
+
+export function parseGoogleProfile(info) {
+  const email = String(info?.email || '').trim().toLowerCase();
+  const givenName = String(info?.given_name || '').trim();
+  const familyName = String(info?.family_name || '').trim();
+  const name = String(info?.name || [givenName, familyName].filter(Boolean).join(' ') || '').trim();
+  return {
+    email,
+    verified: info?.verified_email === true || info?.email_verified === true,
+    id: String(info?.id || info?.sub || '').trim(),
+    name,
+    givenName,
+    familyName,
+    picture: safePicture(info?.picture),
+    locale: String(info?.locale || '').trim().slice(0, 32),
+    hd: String(info?.hd || '').trim().toLowerCase().slice(0, 255),
+  };
 }
 
 export function createGoogle(env = process.env) {
@@ -33,9 +64,10 @@ export function createGoogle(env = process.env) {
   const safeEqual = (a, b) =>
     a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-  function issueState({ consent = false, sms = false, now = Date.now() } = {}) {
+  function issueState({ consent = false, sms = false, from = 'login', now = Date.now() } = {}) {
     const nonce = crypto.randomBytes(16).toString('base64url');
-    const p = `${nonce}|${consent ? 1 : 0}|${sms ? 1 : 0}|${now + STATE_MS}`;
+    const origin = from === 'join' ? 'join' : 'login';
+    const p = `${nonce}|${consent ? 1 : 0}|${sms ? 1 : 0}|${origin}|${now + STATE_MS}`;
     return { nonce, state: `${Buffer.from(p).toString('base64url')}.${sign(p)}` };
   }
 
@@ -45,9 +77,13 @@ export function createGoogle(env = process.env) {
     let p;
     try { p = Buffer.from(b, 'base64url').toString(); } catch { return null; }
     if (!safeEqual(sig, sign(p))) return null;
-    const [got, consent, sms, exp] = p.split('|');
+    const parts = p.split('|');
+    let got, consent, sms, from, exp;
+    if (parts.length === 5) [got, consent, sms, from, exp] = parts;
+    else if (parts.length === 4) { [got, consent, sms, exp] = parts; from = 'login'; }
+    else return null;
     if (!got || got !== String(nonce) || !(Number(exp) > Date.now())) return null;
-    return { consent: consent === '1', sms: sms === '1' };
+    return { consent: consent === '1', sms: sms === '1', from: from === 'join' ? 'join' : 'login' };
   }
 
   function authorizationUrl(state) {
@@ -88,17 +124,13 @@ export function createGoogle(env = process.env) {
       err.code = 'google_userinfo_failed';
       throw err;
     }
-    const email = String(info.email || '').trim().toLowerCase();
-    if (!email || !email.includes('@')) {
+    const profile = parseGoogleProfile(info);
+    if (!profile.email || !profile.email.includes('@')) {
       const err = new Error('google_no_email');
       err.code = 'google_no_email';
       throw err;
     }
-    return {
-      email,
-      verified: info.verified_email === true || info.email_verified === true,
-      name: String(info.name || '').trim(),
-    };
+    return profile;
   }
 
   return {

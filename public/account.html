@@ -147,7 +147,7 @@
 <footer class="site" id="site-footer"></footer>
 
 <script type="module">
-  import { $, api, fetchMe, setLoading, message, renderProfileFields, readProfileFields, checkProfile, showFieldErrors, prettyPhone, mountNav, toast, logout, createOtp, cooldown, devCodeNote, sentText, mountFooter } from '/app.js';
+  import { $, api, fetchMe, setLoading, message, renderProfileFields, readProfileFields, checkProfile, showFieldErrors, prettyPhone, mountNav, toast, logout, createOtp, cooldown, devCodeNote, sentText, mountFooter, safeMemberPicture } from '/app.js';
   import { firebasePhone } from '/phone.js';
   import { normalizePhone, isEmail } from '/validate.js';
 
@@ -187,7 +187,20 @@
 
   function render() {
     const contact = user.emailVerified ? user.email : prettyPhone(user.phone) || user.email;
-    $('#avatar').textContent = user.full_name ? user.full_name.split(' ').map((w) => w[0]).slice(0, 2).join('') : (user.email ? user.email[0].toUpperCase() : '👤');
+    const pic = safeMemberPicture(user.picture);
+    const avatar = $('#avatar');
+    avatar.replaceChildren();
+    if (pic) {
+      const img = document.createElement('img');
+      img.src = pic;
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      avatar.append(img);
+      avatar.classList.add('has-photo');
+    } else {
+      avatar.classList.remove('has-photo');
+      avatar.textContent = user.full_name ? user.full_name.split(' ').map((w) => w[0]).slice(0, 2).join('') : (user.email ? user.email[0].toUpperCase() : '👤');
+    }
     $('#name').textContent = user.full_name || 'New member';
     $('#email').textContent = contact;
     $('#greet').textContent = user.profileComplete ? 'Welcome back' : 'Welcome to the movement';
@@ -312,6 +325,17 @@
         btn.addEventListener('click', () => openLink(type, type === 'email' ? user.email : user.phone));
         row.append(btn);
       }
+      list.append(row);
+    }
+    if (user.googleLinked) {
+      const row = document.createElement('div'); row.className = 'method';
+      const ic = document.createElement('span'); ic.className = 'method-icon'; ic.textContent = 'G';
+      const txt = document.createElement('div'); txt.className = 'method-text';
+      const b = document.createElement('strong'); b.textContent = 'Google';
+      const v = document.createElement('span'); v.textContent = user.email || 'Linked';
+      txt.append(b, v); row.append(ic, txt);
+      const ok = document.createElement('span'); ok.className = 'method-ok'; ok.textContent = '✓ Linked';
+      row.append(ok);
       list.append(row);
     }
   }

@@ -150,6 +150,7 @@ if (PHASE === 'main') {
     assert.match(csp, /www\.gstatic\.com/, 'Firebase SDK origin');
     assert.match(csp, /recaptcha\.google\.com/, 'Firebase reCAPTCHA frame');
     assert.match(csp, /identitytoolkit\.googleapis\.com/, 'Firebase Auth API');
+    assert.match(csp, /googleusercontent\.com/, 'Google profile photos');
     assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/);
     assert.match(r.headers.get('strict-transport-security'), /max-age=31536000/);
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
@@ -361,6 +362,12 @@ if (PHASE === 'main') {
     assert.equal(me.data.member.email, stranger);
     assert.equal(me.data.member.emailVerified, true);
     assert.equal(me.data.member.profileComplete, false);
+    assert.equal(me.data.member.full_name, 'Google Tester');
+    assert.equal(me.data.member.givenName, 'Google');
+    assert.equal(me.data.member.familyName, 'Tester');
+    assert.equal(me.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.locale, 'en');
+    assert.equal(me.data.member.googleLinked, true);
 
     const again = client();
     const { state: state5 } = await startGoogle(again);
@@ -389,7 +396,75 @@ if (PHASE === 'main') {
     assert.equal(join.data.isNew, true);
     assert.equal(join.data.member.email, email);
     assert.equal(join.data.member.emailVerified, true);
+    assert.equal(join.data.member.full_name, 'Google Tester');
+    assert.equal(join.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(join.data.member.googleLinked, true);
     assert.ok(c.sid);
+  });
+
+  test('Join Google is clickable and sends a new person to /join for consent', async () => {
+    const joinPage = await client().get('/join');
+    assert.match(joinPage.text, /Continue with Google/);
+    assert.match(joinPage.text, /from['"]\s*,\s*['"]join['"]/);
+    assert.doesNotMatch(joinPage.text, /\$\('#google-btn'\)\.setAttribute\('aria-disabled'/);
+
+    const email = `join-${rnd()}@gmail.com`;
+    const c = client();
+    const { state } = await startGoogle(c, '?from=join');
+    const cb = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${email}`)}&state=${encodeURIComponent(state)}`);
+    assert.equal(cb.status, 302, cb.text);
+    const next = new URL(cb.headers.get('location'), SITE);
+    assert.equal(next.pathname, '/join');
+    const pending = next.searchParams.get('google_pending');
+    assert.ok(pending);
+    assert.equal(c.sid, null);
+    const done = await c.post('/api/auth/join', { pending, consent: true });
+    assert.equal(done.status, 200, done.text);
+    assert.equal(done.data.isNew, true);
+    assert.equal(done.data.member.email, email);
+    assert.equal(done.data.member.googleLinked, true);
+  });
+
+  test('Google on an existing email logs into that member and keeps their name', async () => {
+    const c = client();
+    const { state } = await startGoogle(c);
+    const cb = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${emailA}`)}&state=${encodeURIComponent(state)}`);
+    assert.equal(cb.status, 302, cb.text);
+    assert.equal(cb.headers.get('location'), '/account');
+    const me = await c.get('/api/me');
+    assert.equal(me.status, 200, me.text);
+    assert.equal(me.data.member.email, emailA);
+    assert.equal(me.data.member.full_name, 'Ada Test Obi', 'do not overwrite a name the member already filled');
+    assert.equal(me.data.member.givenName, 'Google');
+    assert.equal(me.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.googleLinked, true);
+  });
+
+  test('signed-in phone member: free Google email attaches; colliding email logs into that member', async () => {
+    const phone = randomPhone();
+    const attach = client();
+    const started = await signInPhone(attach, phone);
+    assert.equal(started.member.phone, toE164(phone));
+    const gmail = `phone-google-${rnd()}@gmail.com`;
+    const { state } = await startGoogle(attach, '?consent=1');
+    const linked = await attach.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${gmail}`)}&state=${encodeURIComponent(state)}`);
+    assert.equal(linked.status, 302, linked.text);
+    const me = await attach.get('/api/me');
+    assert.equal(me.data.member.phone, toE164(phone));
+    assert.equal(me.data.member.email, gmail);
+    assert.equal(me.data.member.emailVerified, true);
+    assert.equal(me.data.member.googleLinked, true);
+
+    const otherPhone = randomPhone();
+    const collide = client();
+    await signInPhone(collide, otherPhone);
+    const { state: state2 } = await startGoogle(collide);
+    const hop = await collide.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${emailA}`)}&state=${encodeURIComponent(state2)}`);
+    assert.equal(hop.status, 302, hop.text);
+    const landed = await collide.get('/api/me');
+    assert.equal(landed.data.member.email, emailA);
+    assert.equal(landed.data.member.full_name, 'Ada Test Obi');
+    assert.notEqual(landed.data.member.phone, toE164(otherPhone), 'do not attach a colliding email to the phone-only member');
   });
 
   test('phone sign-in through Firebase (local 080… format)', async () => {

@@ -217,11 +217,8 @@
     $('#google-row').hidden = false;
     $('#google-btn').addEventListener('click', (e) => {
       e.preventDefault();
-      if ($('#google-btn').getAttribute('aria-disabled') === 'true') {
-        if (joining) agreed();
-        return;
-      }
       const u = new URL('/api/auth/google', location.origin);
+      if (joining) u.searchParams.set('from', 'join');
       if ($('#agree').checked) u.searchParams.set('consent', '1');
       if ($('#sms-optin').checked) u.searchParams.set('sms', '1');
       location.href = u.pathname + u.search;
@@ -231,6 +228,7 @@
   showStep('s-id'); $(`#${mode}`).focus();
   if (googlePending) {
     pending = googlePending;
+    if (joining) $('#agree-slot').append($('[data-field="consent"]'));
     $('#new-who').textContent = 'your Google account';
     message($('#agree-err'), '');
     showStep('s-agree');
@@ -255,7 +253,6 @@
     const on = $('#agree').checked, typed = typedIn();
     $('#join').setAttribute('aria-disabled', String(!on));
     $('#send').setAttribute('aria-disabled', String(!typed || (joining && !on)));
-    $('#google-btn').setAttribute('aria-disabled', String(joining && !on));
   }
   $('#agree').addEventListener('change', () => { $('[data-field="consent"]').classList.remove('invalid'); syncButtons(); });
   $('#email').addEventListener('input', syncButtons);
