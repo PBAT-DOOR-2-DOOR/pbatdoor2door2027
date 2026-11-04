@@ -47,7 +47,7 @@
       <img src="/images/logo-transparent.png" alt="PBAT Door to Door Movement 2027" class="auth-logo" width="900" height="563">
       <h2>Your street. Your ward. <em>Your voice.</em></h2>
       <ul class="auth-points">
-        <li><span>1</span><div><strong>Sign in in seconds</strong>No password. Just a 6-digit code to your email or phone.</div></li>
+        <li><span>1</span><div><strong>Sign in in seconds</strong>No password. A 6-digit code to your email or phone, or Continue with Google.</div></li>
         <li><span>2</span><div><strong>Find your polling unit</strong>Pick from INEC's official lists, or let us find the ones near you.</div></li>
         <li><span>3</span><div><strong>Join volunteers near you</strong>Door-to-door outreach in your ward and LGA.</div></li>
       </ul>
@@ -61,6 +61,18 @@
     <form class="card narrow step" id="s-id" novalidate>
       <h1 id="id-title">Join the movement</h1>
       <p class="sub" id="id-sub">Use your email or your phone number. We'll send you a 6-digit code to confirm it's you.</p>
+      <div id="google-row" hidden>
+        <a class="btn ghost block google-btn" id="google-btn" href="/api/auth/google">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18" width="18" height="18" aria-hidden="true">
+            <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/>
+            <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+            <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.175 0 7.55 0 9s.348 2.825.957 4.039l3.007-2.332z"/>
+            <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.163 6.656 3.58 9 3.58z"/>
+          </svg>
+          Continue with Google
+        </a>
+        <p class="auth-or" role="separator"><span>or</span></p>
+      </div>
       <div class="seg" role="tablist" aria-label="Sign in with">
         <button type="button" role="tab" id="tab-email" aria-controls="p-email" aria-selected="true">Email</button>
         <button type="button" role="tab" id="tab-phone" aria-controls="p-phone" aria-selected="false" tabindex="-1">Phone</button>
@@ -133,7 +145,17 @@
   import { $, api, fetchMe, setLoading, message, devCodeNote, showStep, createOtp, cooldown, mountNav, mountFooter, sentText } from '/app.js';
   import { normalizePhone, isEmail } from '/validate.js';
 
-  let identifier = '', lastVia = '';
+  let identifier = '', lastVia = '', pending = null;
+  const params = new URLSearchParams(location.search);
+  const googlePending = params.get('google_pending');
+  const googleError = params.get('google_error');
+  const GOOGLE_ERR = {
+    denied: 'Google sign-in was cancelled. You can try again, or use your email or phone.',
+    failed: 'Google sign-in did not work. Please try again, or use your email or phone.',
+    unverified: 'That Google account has not verified its email. Use another account, or sign in with a code.',
+    off: 'Google sign-in is not set up yet. Please use your email or phone.',
+    mismatch: 'That sign-in took too long. Please try Google again.',
+  };
   const me = await fetchMe();
   if (me.ok) { location.replace('/account'); await new Promise(() => {}); }
   mountNav({ member: null, page: 'login' }); mountFooter();
@@ -184,15 +206,39 @@
   const joining = /^\/(join|signup)/.test(location.pathname);
   $('#id-title').textContent = joining ? 'Join the movement' : 'Log in';
   $('#id-sub').textContent = joining
-    ? "Use your email or your phone number. We'll send you a 6-digit code to confirm it's you."
-    : "Use the email or phone number you joined with. We'll send you a 6-digit code.";
+    ? "Use Google, or your email or phone number. We'll send a 6-digit code if you don't use Google."
+    : "Use Google, or the email or phone number you joined with.";
   $('#mode-switch').innerHTML = joining ? 'Already a member? <a href="/login">Log in</a>' : 'New here? <a href="/join">Join the movement</a>';
   document.title = (joining ? 'Join' : 'Log in') + document.title.replace(/^[^·]*/, ' ');
   if (!joining) $('#agree-slot').append($('[data-field="consent"]'));
   let saved = 'email';
   try { saved = localStorage.getItem('pbat-login-tab') || 'email'; } catch {}
+  if (opts.google) {
+    $('#google-row').hidden = false;
+    $('#google-btn').addEventListener('click', (e) => {
+      e.preventDefault();
+      if ($('#google-btn').getAttribute('aria-disabled') === 'true') {
+        if (joining) agreed();
+        return;
+      }
+      const u = new URL('/api/auth/google', location.origin);
+      if ($('#agree').checked) u.searchParams.set('consent', '1');
+      if ($('#sms-optin').checked) u.searchParams.set('sms', '1');
+      location.href = u.pathname + u.search;
+    });
+  }
   selectTab(saved === 'phone' && opts.sms ? 'phone' : 'email');
   showStep('s-id'); $(`#${mode}`).focus();
+  if (googlePending) {
+    pending = googlePending;
+    $('#new-who').textContent = 'your Google account';
+    message($('#agree-err'), '');
+    showStep('s-agree');
+    history.replaceState(null, '', location.pathname);
+  } else if (googleError) {
+    message($('#id-err'), GOOGLE_ERR[googleError] || GOOGLE_ERR.failed);
+    history.replaceState(null, '', location.pathname);
+  }
 
   // ---- Consent (required) and SMS opt-in (optional), sent with every sign-in step ----
   const consent = () => ({ consent: $('#agree').checked, sms: $('#sms-optin').checked });
@@ -209,6 +255,7 @@
     const on = $('#agree').checked, typed = typedIn();
     $('#join').setAttribute('aria-disabled', String(!on));
     $('#send').setAttribute('aria-disabled', String(!typed || (joining && !on)));
+    $('#google-btn').setAttribute('aria-disabled', String(joining && !on));
   }
   $('#agree').addEventListener('change', () => { $('[data-field="consent"]').classList.remove('invalid'); syncButtons(); });
   $('#email').addEventListener('input', syncButtons);
@@ -369,7 +416,6 @@
     location.href = data.isNew ? '/account?welcome=1' : '/account';
   });
 
-  let pending = null;
   $('#s-agree').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!agreed()) return;

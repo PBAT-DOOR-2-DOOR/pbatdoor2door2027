@@ -33,6 +33,12 @@ services:
       OTP_PHONE_LIMIT_PER_DAY: "5"
       # Re-issue the session cookie on every authenticated request so the rolling-refresh test can see it.
       SESSION_REFRESH_MS: "0"
+      # Public Google sign-in (token/userinfo hit the mock; the start URL stays accounts.google.com).
+      GOOGLE_CLIENT_ID: pbat-test-google-client
+      GOOGLE_CLIENT_SECRET: pbat-test-google-secret
+      GOOGLE_REDIRECT_URI: https://pbat.test/api/auth/google/callback
+      GOOGLE_TOKEN_URL: http://mock:8025/google/token
+      GOOGLE_USERINFO_URL: http://mock:8025/google/userinfo
     depends_on:
       mock:
         condition: service_started

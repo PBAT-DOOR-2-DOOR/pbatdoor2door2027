@@ -3,7 +3,7 @@
 The volunteer website for the PBAT DOOR TO DOOR movement, served at **https://pbatdoor2door2027.org** (`www` redirects to it).
 
 - **Landing page** (`/`): the movement and its Founder & Convener, Tompolo; the President's photo, a short bio timeline, and the administration's works, each linked to its source.
-- **Join or log in** (`/login`; `/join` and `/signup` redirect here): pick **Email** or **Phone** (side-by-side tabs; the phone box has a fixed 🇳🇬 +234 prefix and accepts 0803…, 803… or +234… forms), then type the 6-digit code. Email codes come from the site; phone codes are a text from **Firebase Phone Authentication**. The first sign-in creates the account.
+- **Join or log in** (`/login`; `/join` and `/signup` redirect here): **Continue with Google**, or pick **Email** or **Phone** (side-by-side tabs; the phone box has a fixed 🇳🇬 +234 prefix and accepts 0803…, 803… or +234… forms) and type the 6-digit code. Google sign-in is public (any Google account; no invite list). Email codes come from the site; phone codes are a text from **Firebase Phone Authentication**. The first sign-in creates the account.
 - **My account** (`/account`; `/welcome` redirects here): "Complete your profile" (full name, state and LGA required; the rest optional), edit details, link a second email or phone (which merges duplicate accounts), see signed-in devices, log out of one or all devices. Sessions last until the member logs out (the cookie is rolled, at most once a day, so the browser's ~400-day cap doesn't drop it).
 - **Volunteer area** (`/volunteer`): My Ward, log door-to-door visits, pledges, leaderboard and doorstep toolkit. Works offline (service worker + queued visits). Coordinators use `/coordinator`.
 - **Polling units**: state → LGA → ward → polling unit lists from INEC data (176,846 units) in `public/geo/`, plus **"near me"**, which suggests the closest units from the phone's GPS (`/api/geo/near`).
@@ -19,7 +19,7 @@ Repository: https://github.com/PBAT-DOOR-2-DOOR/pbatdoor2door2027 · on the serv
 1. [Local development](#1-local-development)
 2. [Server setup (fresh Ubuntu 24.04 Linode)](#2-server-setup-fresh-ubuntu-2404-linode)
 3. [DNS on Cloudflare](#3-dns-on-cloudflare)
-4. [Email (Brevo or ZeptoMail) and phone sign-in](#4-email-and-phone-sign-in)
+4. [Email, phone, and Google sign-in](#4-email-phone-and-google-sign-in)
 5. [First deploy](#5-first-deploy)
 6. [Updates](#6-updates)
 7. [Backups and restore](#7-backups-and-restore)
@@ -158,7 +158,7 @@ To go back, set `PROXY_MODE=direct`, `docker compose up -d caddy`, and grey-clou
 
 ---
 
-## 4. Email and phone sign-in
+## 4. Email, phone, and Google sign-in
 
 ### Email: Brevo (recommended)
 
@@ -208,6 +208,27 @@ Run `docker compose up -d` (or `scripts/deploy.sh`). `docker compose logs app | 
 The Content-Security-Policy allows the Firebase SDK (`www.gstatic.com`), Google reCAPTCHA (`www.google.com`, `recaptcha.google.com`) and the Identity Toolkit APIs automatically when Firebase is configured. If the phone step is blocked by the browser, set `CSP_MODE=report-only`, redeploy, and check the console for the blocked address.
 
 Limits that protect the credit: each email gets one new code per minute; each visitor IP can request at most 10 codes per hour (`OTP_IP_LIMIT_PER_HOUR`); and each phone number can complete at most 5 Firebase sign-ins or links per day (`OTP_PHONE_LIMIT_PER_DAY`). The counts are kept in Postgres, so restarts don't reset them.
+
+### Google sign-in (public)
+
+Anyone with a Google account can join or log in. This is **not** Zoni: there is no `GOOGLE_INVITE_EMAILS` allow-list. The button on `/login` and `/join` sends the browser to Google; the callback at `/api/auth/google/callback` creates the same permanent session as email or phone.
+
+Use a **separate** OAuth Web client for PBAT (same Google Cloud project as Zoni is fine). Put the client id and secret in **`/opt/pbatdoor2door/.env` only** — never copy `/opt/zoni/.env`, and never commit `.env`.
+
+**Google Cloud console** (APIs & Services → Credentials → the Web client):
+
+1. Authorized JavaScript origins: `https://pbatdoor2door2027.org`, `https://www.pbatdoor2door2027.org`, and `http://localhost:3000` (for local work).
+2. Authorized redirect URIs: `https://pbatdoor2door2027.org/api/auth/google/callback`, `https://www.pbatdoor2door2027.org/api/auth/google/callback`, and `http://localhost:3000/api/auth/google/callback`.
+
+**Then in `/opt/pbatdoor2door/.env`:**
+
+```bash
+GOOGLE_CLIENT_ID="<Web client ID>"
+GOOGLE_CLIENT_SECRET="<Web client secret>"
+GOOGLE_REDIRECT_URI=https://pbatdoor2door2027.org/api/auth/google/callback
+```
+
+After an `.env`-only change: `docker compose up -d --force-recreate --no-deps app`. After a code deploy, `scripts/deploy.sh` rebuilds the app and leaves `.env` in place. `docker compose logs app | grep 'is running'` should show `google: public`. New members who use Google from **Log in** (not Join) still tick the privacy box before the account is created, same as email or phone.
 
 Server-side SMS providers (Zoho CPaaS WhatsApp/voice, Message Central, DageSMS, Termii, Twilio) remain in the code as a fallback **only when Firebase is not set**. Leave their env vars empty for production.
 
@@ -349,7 +370,7 @@ All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit
 | `RESEND_API_KEY` | Resend email. |
 | `GMAIL_SCRIPT_URL`, `GMAIL_SCRIPT_SECRET` | Gmail via Google Apps Script (`apps-script/Code.gs`, ~100 emails/day). |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | SMTP (blocked on Linode by default). |
-| `FIREBASE_API_KEY`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_SDK_URL`, `FIREBASE_JWKS_URL` | Firebase Phone Authentication. When the API key and project ID are set, Firebase wins over every other phone provider. `FIREBASE_JWKS_URL` is for tests only. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | Public Google sign-in. Any Google account can join; there is no invite list. PBAT's own client in `/opt/pbatdoor2door/.env` — do not copy Zoni's. |
 | `ZOHO_WA_TOKEN`, `ZOHO_WA_FROM`, `ZOHO_WA_TEMPLATE`, `ZOHO_WA_CODE_VAR` | Zoho CPaaS WhatsApp codes: the agent's WhatsApp API key, sender number, Authentication template key or alias, and its code variable (default `code`). |
 | `ZOHO_VOICE_TOKEN`, `ZOHO_VOICE_FROM`, `ZOHO_VOICE_TEMPLATE`, `ZOHO_VOICE_CODE_VAR`, `ZOHO_VOICE_LANGUAGE` | Zoho CPaaS voice calls (fallback and "Call me with the code"): the agent's Voice API key and number; optional voice template (default: text-to-speech). |
 | `ZOHO_CPAAS_API_URL` | Zoho CPaaS API base (default `https://cpaas.zoho.com/v1.1`). |
@@ -390,6 +411,7 @@ docker compose down                     # stop everything (data is kept in volum
 | Everyone gets "Too many codes requested" | Real visitor IPs aren't reaching the app: Cloudflare's proxy is on but `PROXY_MODE` is still `direct`. |
 | No emails arrive | `docker compose logs app \| grep -i 'send failed'`. 401 = wrong key or Brevo Authorised IPs; unverified sender; or spam (finish SPF/DKIM). SMTP timeouts mean the port is blocked: switch to Brevo or ZeptoMail. |
 | Login works but you're bounced back to `/login` | You're on `http://` or the raw IP; use `https://pbatdoor2door2027.org`. |
+| Google sign-in sends you back to `/login` with an error | Add the PBAT origins and `/api/auth/google/callback` redirect URIs on the Web client. Confirm `/opt/pbatdoor2door/.env` has `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI=https://pbatdoor2door2027.org/api/auth/google/callback`, then recreate the app container. |
 | Firebase `auth/unauthorized-domain` | Add `pbatdoor2door2027.org` and `www.pbatdoor2door2027.org` under Authentication → Settings → Authorized domains. |
 | Firebase `auth/billing-not-enabled` | Upgrade the Firebase project to Blaze. |
 | Phone step blocked by the browser | Set `CSP_MODE=report-only`, redeploy, and read the blocked URL in the console. |
@@ -402,7 +424,7 @@ docker compose down                     # stop everything (data is kept in volum
 ## 10. Tests
 
 - `npm test`: unit tests (input validation including phone formats, the polling-unit lookup compared with the original linear scan at hundreds of points, email and Zoho WhatsApp/voice request formats, rolling sessions, CSP hashes including Firebase/reCAPTCHA origins).
-- `scripts/test-stack.sh`: builds and starts the **whole production stack** locally (Postgres, app with `NODE_ENV=production`, Caddy with HTTPS on a test domain using Caddy's internal CA, backups), with a mock standing in for Brevo and Firebase Phone Auth (JWKS + test ID tokens), then runs `test/e2e/stack.test.js` through Caddy: health/readiness, HTTP→HTTPS and www→apex redirects, pages and legacy redirects, security headers (including Firebase CSP), pre-compressed geo data, email sign-in (cooldown, wrong code, single-use code, Secure/HttpOnly/SameSite cookie, no codes leaked), rolling session-cookie refresh and that logout still revokes it, profile validation and save, second device, phone sign-in by Firebase (local 080… format, consent, join), account linking and merge, the per-phone daily cap across Firebase sign-in and linking, logout and logout-all, `/api/geo/near`, the per-IP limit including that a spoofed `X-Forwarded-For` is ignored. It then restarts the app and checks sessions and both rate limits survived, takes a backup, restores it with `scripts/restore.sh`, and checks again. It needs free ports 80, 443, 3000 and 8025, so run it on a development machine or in CI, **not on the production server**.
+- `scripts/test-stack.sh`: builds and starts the **whole production stack** locally (Postgres, app with `NODE_ENV=production`, Caddy with HTTPS on a test domain using Caddy's internal CA, backups), with a mock standing in for Brevo, Firebase Phone Auth (JWKS + test ID tokens), and Google OAuth token/userinfo, then runs `test/e2e/stack.test.js` through Caddy: health/readiness, HTTP→HTTPS and www→apex redirects, pages and legacy redirects, security headers (including Firebase CSP), pre-compressed geo data, email sign-in (cooldown, wrong code, single-use code, Secure/HttpOnly/SameSite cookie, no codes leaked), rolling session-cookie refresh and that logout still revokes it, profile validation and save, second device, phone sign-in by Firebase (local 080… format, consent, join), public Google sign-in (start redirect, new member consent, existing member session, unverified email rejected), account linking and merge, the per-phone daily cap across Firebase sign-in and linking, logout and logout-all, `/api/geo/near`, the per-IP limit including that a spoofed `X-Forwarded-For` is ignored. It then restarts the app and checks sessions and both rate limits survived, takes a backup, restores it with `scripts/restore.sh`, and checks again. It needs free ports 80, 443, 3000 and 8025, so run it on a development machine or in CI, **not on the production server**.
 
 Both run automatically in GitHub Actions on every pull request and push (section 6, "Automatic deploys").
 
