@@ -39,7 +39,7 @@ export function securityHeaders({ publicDir, isProd, firebase, turnstile, mode =
     scriptSrcAttr: ["'none'"],
     styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
     fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
-    imgSrc: ["'self'", 'data:', 'blob:', 'https://commons.wikimedia.org', 'https://upload.wikimedia.org'],
+    imgSrc: ["'self'", 'data:', 'blob:', 'https://commons.wikimedia.org', 'https://upload.wikimedia.org', 'https://*.googleusercontent.com'],
     connectSrc: ["'self'", ...firebaseConnect],
     frameSrc: frames.length ? frames : ["'none'"],
     workerSrc: ["'self'"],

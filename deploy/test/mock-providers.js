@@ -39,7 +39,17 @@ http.createServer((req, res) => {
     const email = sep === -1 ? '' : raw.slice(sep + 1);
     if ((kind === 'ok' || kind === 'unverified') && email.includes('@')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ email, verified_email: kind === 'ok', name: 'Google Tester' }));
+      return res.end(JSON.stringify({
+        id: `gid:${email}`,
+        email,
+        verified_email: kind === 'ok',
+        name: 'Google Tester',
+        given_name: 'Google',
+        family_name: 'Tester',
+        picture: 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto',
+        locale: 'en',
+        hd: email.endsWith('@gmail.com') ? '' : email.split('@')[1],
+      }));
     }
     res.writeHead(401, { 'Content-Type': 'application/json' });
     return res.end('{}');

@@ -62,6 +62,31 @@ const initials = (m) => (m.full_name || '').split(/\s+/).filter(Boolean).map((w)
 const firstName = (m) => (m.full_name || '').split(/\s+/)[0] || 'Account';
 const contactOf = (m) => (m.emailVerified ? m.email : prettyPhone(m.phone)) || m.email || prettyPhone(m.phone);
 
+/** Only https Google-hosted photos (matches CSP img-src). */
+export function safeMemberPicture(url) {
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'https:') return '';
+    if (!/(^|\.)googleusercontent\.com$/i.test(u.hostname)) return '';
+    return u.href;
+  } catch {
+    return '';
+  }
+}
+
+/** Custom upload (`/api/me/photo`) wins over the Google picture. */
+export function memberPicture(m) {
+  const p = String(m?.picture || '');
+  if (p.startsWith('/api/me/photo')) return p;
+  return safeMemberPicture(p || m?.googlePicture);
+}
+
+export function avatarMarkup(m, cls = 'user-avatar') {
+  const pic = memberPicture(m);
+  if (pic) return `<img class="${cls}" src="${escHtml(pic)}" alt="" referrerpolicy="no-referrer">`;
+  return `<span class="${cls}">${escHtml(initials(m || {}))}</span>`;
+}
+
 export async function logout(all = false) {
   await api(all ? '/api/auth/logout-all' : '/api/auth/logout', {});
   rememberMember(null);
@@ -78,12 +103,12 @@ export function cachedMember() {
 function rememberMember(m) {
   try {
     if (m) localStorage.setItem(ME_KEY, JSON.stringify({ full_name: m.full_name || '', email: m.email || '', phone: m.phone || '',
-      role: m.role || 'volunteer', profileComplete: Boolean(m.profileComplete) }));
+      picture: m.picture || '', role: m.role || 'volunteer', profileComplete: Boolean(m.profileComplete) }));
     else localStorage.removeItem(ME_KEY);
   } catch {}
 }
-const sameMember = (a, b) => JSON.stringify(a && [a.full_name, a.email, a.phone, a.role, Boolean(a.profileComplete)])
-  === JSON.stringify(b && [b.full_name, b.email, b.phone, b.role, Boolean(b.profileComplete)]);
+const sameMember = (a, b) => JSON.stringify(a && [a.full_name, a.email, a.phone, a.picture, a.role, Boolean(a.profileComplete)])
+  === JSON.stringify(b && [b.full_name, b.email, b.phone, b.picture, b.role, Boolean(b.profileComplete)]);
 
 /** Fill the header for this visitor. Pass the member if the page already loaded it. */
 export async function mountNav({ member, page } = {}) {
@@ -121,7 +146,7 @@ function renderNav(member, page) {
     auth.innerHTML = `
       <div class="user-menu">
         <button class="user-btn" type="button" aria-haspopup="menu" aria-expanded="false">
-          <span class="user-avatar">${escHtml(initials(member))}</span>
+          ${avatarMarkup(member)}
           <span class="user-name">${escHtml(firstName(member))}</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
@@ -136,7 +161,7 @@ function renderNav(member, page) {
         </div>
       </div>`;
     drawer.innerHTML = `
-      <div class="drawer-user"><span class="user-avatar">${escHtml(initials(member))}</span>
+      <div class="drawer-user">${avatarMarkup(member)}
         <div><strong>${escHtml(member.full_name || 'New member')}</strong><span>${escHtml(contactOf(member))}</span></div></div>
       <a href="/volunteer">Volunteer area</a>${member.role && member.role !== 'volunteer' ? '<a href="/coordinator">Coordinator view</a>' : ''}
       <a href="/account">My account</a>${links}

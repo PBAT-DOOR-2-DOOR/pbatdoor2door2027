@@ -41,11 +41,11 @@ function client(base = SITE, extraHeaders = {}) {
         redirect: 'manual',
         headers: {
           'User-Agent': 'pbat-e2e',
-          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          ...(body !== undefined && !Buffer.isBuffer(body) ? { 'Content-Type': 'application/json' } : {}),
           ...(cookie ? { Cookie: cookie } : {}),
           ...extraHeaders, ...headers,
         },
-        body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+        body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : typeof body === 'string' ? body : JSON.stringify(body),
       });
       for (const set of res.headers.getSetCookie()) {
         const eq = set.indexOf('=');
@@ -64,9 +64,27 @@ function client(base = SITE, extraHeaders = {}) {
     },
     get: (p, h) => c.req('GET', p, undefined, h),
     post: (p, b = {}, h) => c.req('POST', p, b, h),
+    async getBuf(path, headers = {}) {
+      const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+      const res = await fetch(base + path, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'pbat-e2e',
+          ...(cookie ? { Cookie: cookie } : {}),
+          ...extraHeaders, ...headers,
+        },
+      });
+      return { status: res.status, buf: Buffer.from(await res.arrayBuffer()), headers: res.headers };
+    },
   };
   return c;
 }
+
+const PNG_1x1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSjAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+);
 
 /** The latest code the mock delivered to `to`, and how: { code, channel: 'email' | 'whatsapp' | 'voice' | 'sms' }. */
 async function delivered(to) {
@@ -150,6 +168,7 @@ if (PHASE === 'main') {
     assert.match(csp, /www\.gstatic\.com/, 'Firebase SDK origin');
     assert.match(csp, /recaptcha\.google\.com/, 'Firebase reCAPTCHA frame');
     assert.match(csp, /identitytoolkit\.googleapis\.com/, 'Firebase Auth API');
+    assert.match(csp, /googleusercontent\.com/, 'Google profile photos');
     assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/);
     assert.match(r.headers.get('strict-transport-security'), /max-age=31536000/);
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
@@ -361,6 +380,12 @@ if (PHASE === 'main') {
     assert.equal(me.data.member.email, stranger);
     assert.equal(me.data.member.emailVerified, true);
     assert.equal(me.data.member.profileComplete, false);
+    assert.equal(me.data.member.full_name, 'Google Tester');
+    assert.equal(me.data.member.givenName, 'Google');
+    assert.equal(me.data.member.familyName, 'Tester');
+    assert.equal(me.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.locale, 'en');
+    assert.equal(me.data.member.googleLinked, true);
 
     const again = client();
     const { state: state5 } = await startGoogle(again);
@@ -389,7 +414,103 @@ if (PHASE === 'main') {
     assert.equal(join.data.isNew, true);
     assert.equal(join.data.member.email, email);
     assert.equal(join.data.member.emailVerified, true);
+    assert.equal(join.data.member.full_name, 'Google Tester');
+    assert.equal(join.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(join.data.member.googleLinked, true);
     assert.ok(c.sid);
+  });
+
+  test('Join Google is clickable and sends a new person to /join for consent', async () => {
+    const joinPage = await client().get('/join');
+    assert.match(joinPage.text, /Continue with Google/);
+    assert.match(joinPage.text, /from['"]\s*,\s*['"]join['"]/);
+    assert.doesNotMatch(joinPage.text, /\$\('#google-btn'\)\.setAttribute\('aria-disabled'/);
+
+    const email = `join-${rnd()}@gmail.com`;
+    const c = client();
+    const { state } = await startGoogle(c, '?from=join');
+    const cb = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${email}`)}&state=${encodeURIComponent(state)}`);
+    assert.equal(cb.status, 302, cb.text);
+    const next = new URL(cb.headers.get('location'), SITE);
+    assert.equal(next.pathname, '/join');
+    const pending = next.searchParams.get('google_pending');
+    assert.ok(pending);
+    assert.equal(c.sid, null);
+    const done = await c.post('/api/auth/join', { pending, consent: true });
+    assert.equal(done.status, 200, done.text);
+    assert.equal(done.data.isNew, true);
+    assert.equal(done.data.member.email, email);
+    assert.equal(done.data.member.googleLinked, true);
+  });
+
+  test('Google on an existing email logs into that member and keeps their name', async () => {
+    const c = client();
+    const { state } = await startGoogle(c);
+    const cb = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${emailA}`)}&state=${encodeURIComponent(state)}`);
+    assert.equal(cb.status, 302, cb.text);
+    assert.equal(cb.headers.get('location'), '/account');
+    const me = await c.get('/api/me');
+    assert.equal(me.status, 200, me.text);
+    assert.equal(me.data.member.email, emailA);
+    assert.equal(me.data.member.full_name, 'Ada Test Obi', 'do not overwrite a name the member already filled');
+    assert.equal(me.data.member.givenName, 'Google');
+    assert.equal(me.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.googlePicture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.hasCustomPhoto, false);
+    assert.equal(me.data.member.googleLinked, true);
+  });
+
+  test('custom photo is stored as bytes and beats the Google picture until cleared', async () => {
+    assert.equal((await client().get('/api/me/photo')).status, 401);
+    const before = await devA1.get('/api/me');
+    assert.equal(before.data.member.hasCustomPhoto, false);
+    assert.equal(before.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+
+    const junk = await devA1.req('POST', '/api/me/photo', Buffer.from('not-an-image'), { 'Content-Type': 'image/png' });
+    assert.equal(junk.status, 400);
+
+    const ok = await devA1.req('POST', '/api/me/photo', PNG_1x1, { 'Content-Type': 'image/png' });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.data.member.hasCustomPhoto, true);
+    assert.match(ok.data.member.picture, /^\/api\/me\/photo\?t=/);
+    assert.equal(ok.data.member.googlePicture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+
+    const pic = await devA1.getBuf('/api/me/photo');
+    assert.equal(pic.status, 200);
+    assert.equal(pic.headers.get('content-type'), 'image/png');
+    assert.deepEqual(pic.buf, PNG_1x1);
+
+    const gone = await devA1.req('DELETE', '/api/me/photo');
+    assert.equal(gone.status, 200, gone.text);
+    assert.equal(gone.data.member.hasCustomPhoto, false);
+    assert.equal(gone.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto', 'clearing custom photo falls back to Google');
+  });
+
+  test('signed-in phone member: free Google email attaches; colliding email logs into that member', async () => {
+    const phone = randomPhone();
+    const attach = client();
+    const started = await signInPhone(attach, phone);
+    assert.equal(started.member.phone, toE164(phone));
+    const gmail = `phone-google-${rnd()}@gmail.com`;
+    const { state } = await startGoogle(attach, '?consent=1');
+    const linked = await attach.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${gmail}`)}&state=${encodeURIComponent(state)}`);
+    assert.equal(linked.status, 302, linked.text);
+    const me = await attach.get('/api/me');
+    assert.equal(me.data.member.phone, toE164(phone));
+    assert.equal(me.data.member.email, gmail);
+    assert.equal(me.data.member.emailVerified, true);
+    assert.equal(me.data.member.googleLinked, true);
+
+    const otherPhone = randomPhone();
+    const collide = client();
+    await signInPhone(collide, otherPhone);
+    const { state: state2 } = await startGoogle(collide);
+    const hop = await collide.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${emailA}`)}&state=${encodeURIComponent(state2)}`);
+    assert.equal(hop.status, 302, hop.text);
+    const landed = await collide.get('/api/me');
+    assert.equal(landed.data.member.email, emailA);
+    assert.equal(landed.data.member.full_name, 'Ada Test Obi');
+    assert.notEqual(landed.data.member.phone, toE164(otherPhone), 'do not attach a colliding email to the phone-only member');
   });
 
   test('phone sign-in through Firebase (local 080… format)', async () => {
@@ -430,7 +551,9 @@ if (PHASE === 'main') {
     assert.equal(meB.data.member.email, emailA);
     const viaPhone = await signInPhone(client(), phoneB);
     assert.equal(viaPhone.member.email, emailA);
-    assert.equal((await devA1.get('/api/me')).data.sessions.length, 4);
+    // Ada: email join + second device + two Google logins (existing email, colliding
+    // phone hop) + Bayo's moved session + this phone sign-in.
+    assert.equal((await devA1.get('/api/me')).data.sessions.length, 6);
   });
 
   test('per-phone daily cap covers Firebase sign-in and linking, from any connection', async () => {

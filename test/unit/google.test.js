@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createGoogle, googleEnabled, googleErrorRedirect, STATE_COOKIE } from '../../google.js';
+import { createGoogle, googleEnabled, googleErrorRedirect, parseGoogleProfile, safePicture, STATE_COOKIE } from '../../google.js';
 
 const ENV = {
   GOOGLE_CLIENT_ID: 'client-id',
@@ -37,17 +37,48 @@ test('authorization URL is Google OAuth with PBAT callback, no invite hint', () 
 test('signed OAuth state carries consent and rejects a bad nonce or signature', () => {
   const g = createGoogle(ENV);
   const { nonce, state } = g.issueState({ consent: true, sms: true });
-  assert.deepEqual(g.readState(state, nonce), { consent: true, sms: true });
+  assert.deepEqual(g.readState(state, nonce), { consent: true, sms: true, from: 'login' });
   assert.equal(g.readState(state, 'other-nonce'), null);
   assert.equal(g.readState(state.slice(0, -2) + 'xx', nonce), null);
   assert.equal(g.readState('', nonce), null);
   const stale = g.issueState({ now: Date.now() - 11 * 60 * 1000 });
   assert.equal(g.readState(stale.state, stale.nonce), null);
+  const join = g.issueState({ from: 'join', consent: false });
+  assert.deepEqual(g.readState(join.state, join.nonce), { consent: false, sms: false, from: 'join' });
   assert.deepEqual(g.cookieOptions(true), {
     httpOnly: true, secure: true, sameSite: 'lax', maxAge: 10 * 60 * 1000, path: '/',
   });
   assert.equal(STATE_COOKIE, 'gostate');
   assert.equal(googleErrorRedirect('denied'), '/login?google_error=denied');
+  assert.equal(googleErrorRedirect('denied', 'join'), '/join?google_error=denied');
+});
+
+test('parseGoogleProfile keeps only a Google photo URL and lowercases email', () => {
+  assert.equal(safePicture('https://lh3.googleusercontent.com/a/photo'), 'https://lh3.googleusercontent.com/a/photo');
+  assert.equal(safePicture('https://evil.example/x.png'), '');
+  assert.equal(safePicture('http://lh3.googleusercontent.com/a/photo'), '');
+  const p = parseGoogleProfile({
+    email: 'Filatei@Gmail.com',
+    verified_email: true,
+    id: '123',
+    name: 'Filatei Gwama',
+    given_name: 'Filatei',
+    family_name: 'Gwama',
+    picture: 'https://lh3.googleusercontent.com/a/filatei',
+    locale: 'en',
+    hd: 'Gmail.com',
+  });
+  assert.deepEqual(p, {
+    email: 'filatei@gmail.com',
+    verified: true,
+    id: '123',
+    name: 'Filatei Gwama',
+    givenName: 'Filatei',
+    familyName: 'Gwama',
+    picture: 'https://lh3.googleusercontent.com/a/filatei',
+    locale: 'en',
+    hd: 'gmail.com',
+  });
 });
 
 test('code exchange returns a verified email from any Google account (invite list unused)', async () => {
@@ -70,7 +101,12 @@ test('code exchange returns a verified email from any Google account (invite lis
       res.end(JSON.stringify({
         email: 'Stranger.NotOnAnyList@gmail.com',
         verified_email: true,
+        id: 'gid-stranger',
         name: 'Stranger',
+        given_name: 'Stranger',
+        family_name: 'Person',
+        picture: 'https://lh3.googleusercontent.com/a/stranger',
+        locale: 'en-GB',
       }));
     });
   });
@@ -84,7 +120,17 @@ test('code exchange returns a verified email from any Google account (invite lis
       GOOGLE_INVITE_EMAILS: 'filatei@gmail.com,francisaduku00@gmail.com',
     });
     const profile = await g.exchangeCode('auth-code');
-    assert.deepEqual(profile, { email: 'stranger.notonanylist@gmail.com', verified: true, name: 'Stranger' });
+    assert.deepEqual(profile, {
+      email: 'stranger.notonanylist@gmail.com',
+      verified: true,
+      id: 'gid-stranger',
+      name: 'Stranger',
+      givenName: 'Stranger',
+      familyName: 'Person',
+      picture: 'https://lh3.googleusercontent.com/a/stranger',
+      locale: 'en-GB',
+      hd: '',
+    });
     assert.equal(seen[1].auth, 'Bearer access-tok');
   } finally {
     server.close();
@@ -113,4 +159,11 @@ test('runtime code never reads an invite allow-list env var', () => {
     assert.doesNotMatch(text, /GOOGLE_INVITE_EMAILS/, `${file} must not read an invite list`);
   }
   assert.doesNotMatch(fs.readFileSync(path.join(root, '.env.example'), 'utf8'), /^GOOGLE_INVITE_EMAILS=/m);
+});
+
+test('Join does not grey out Continue with Google while Privacy/Terms are unticked', () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const html = fs.readFileSync(path.join(root, 'public', 'login.html'), 'utf8');
+  assert.match(html, /from['"]\s*,\s*['"]join['"]/);
+  assert.doesNotMatch(html, /\$\('#google-btn'\)\.setAttribute\('aria-disabled'/);
 });
