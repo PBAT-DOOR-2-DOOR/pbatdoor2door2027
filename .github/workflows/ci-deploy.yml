@@ -90,3 +90,47 @@ jobs:
           done
           echo "::error::https://pbatdoor2door2027.org/healthz did not answer after the deploy."
           exit 1
+
+  notify:
+    name: Notify owner on failure
+    needs: [unit, stack, deploy]
+    if: failure() && secrets.TELEGRAM_BOT_TOKEN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send Telegram message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          UNIT_RESULT: ${{ needs.unit.result }}
+          STACK_RESULT: ${{ needs.stack.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +x
+          set -eu
+          if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "TELEGRAM_CHAT_ID is not set; skipping Telegram."
+            exit 0
+          fi
+          failed=""
+          if [ "$UNIT_RESULT" = failure ]; then
+            failed="${failed:+$failed, }Unit tests and lint"
+          fi
+          if [ "$STACK_RESULT" = failure ]; then
+            failed="${failed:+$failed, }Full stack tests (Docker)"
+          fi
+          if [ "$DEPLOY_RESULT" = failure ]; then
+            failed="${failed:+$failed, }Deploy to production"
+          fi
+          [ -n "$failed" ] || failed="unknown"
+          text="CI failed
+          repo: ${REPO}
+          branch: ${BRANCH}
+          failed job: ${failed}
+          run: ${RUN_URL}"
+          curl -fsS --max-time 20 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${text}"
