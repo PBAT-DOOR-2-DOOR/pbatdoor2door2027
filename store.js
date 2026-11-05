@@ -56,11 +56,11 @@ const QUERIES = {
   applyGoogle: `UPDATE members SET
                   google_id = CASE WHEN $2 <> '' THEN $2 ELSE google_id END,
                   google_picture = CASE WHEN $3 <> '' THEN $3 ELSE google_picture END,
-                  given_name = CASE WHEN given_name = '' AND $4 <> '' THEN $4 ELSE given_name END,
-                  family_name = CASE WHEN family_name = '' AND $5 <> '' THEN $5 ELSE family_name END,
+                  given_name = CASE WHEN $4 <> '' THEN $4 ELSE given_name END,
+                  family_name = CASE WHEN $5 <> '' THEN $5 ELSE family_name END,
                   full_name = CASE WHEN full_name = '' AND $6 <> '' THEN $6 ELSE full_name END,
-                  locale = CASE WHEN locale = '' AND $7 <> '' THEN $7 ELSE locale END,
-                  hd = CASE WHEN hd = '' AND $8 <> '' THEN $8 ELSE hd END
+                  locale = CASE WHEN $7 <> '' THEN $7 ELSE locale END,
+                  hd = CASE WHEN $8 <> '' THEN $8 ELSE hd END
                 WHERE id = $1`,
   updateProfile: `UPDATE members SET ${PROFILE_FIELDS.map((f, i) => `${f} = $${i + 2}`).join(', ')},
                     consent_at = COALESCE(consent_at, $${PROFILE_FIELDS.length + 2}) WHERE id = $1`,
@@ -295,8 +295,9 @@ export function createStore(pool) {
     }),
 
     /**
-     * Persist Google profile fields. google_id and picture update when Google sends them;
-     * given/family/full name, locale and hd fill only when the member left them blank.
+     * Upsert Google identity onto this member (same row, never a second account).
+     * google_id, picture, given/family name, locale and hd refresh whenever Google sends them.
+     * full_name fills only if the member left it blank, so a later profile edit is kept.
      */
     applyGoogleProfile: (memberId, profile, db) => applyGoogleProfile(memberId, profile, db || pool),
 

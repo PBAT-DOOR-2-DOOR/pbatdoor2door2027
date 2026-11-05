@@ -395,6 +395,10 @@ if (PHASE === 'main') {
     const me2 = await again.get('/api/me');
     assert.equal(me2.data.member.email, stranger);
     assert.equal(me2.data.member.emailVerified, true);
+    assert.equal(me2.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me2.data.member.givenName, 'Google');
+    assert.equal(me2.data.member.familyName, 'Tester');
+    assert.equal(me2.data.member.googleLinked, true);
   });
 
   test('Google sign-in from Log in asks a new person to agree; any Google email works', async () => {
@@ -441,6 +445,34 @@ if (PHASE === 'main') {
     assert.equal(done.data.isNew, true);
     assert.equal(done.data.member.email, email);
     assert.equal(done.data.member.googleLinked, true);
+  });
+
+  test('Google sign-in upserts Google fields onto an existing email member', async () => {
+    const email = `pre-google-${rnd()}@example.com`;
+    const c = client();
+    await signIn(c, email);
+    const before = await c.get('/api/me');
+    assert.equal(before.data.member.email, email);
+    assert.equal(before.data.member.emailVerified, true);
+    assert.equal(before.data.member.googleLinked, false);
+    assert.equal(before.data.member.picture, '');
+    assert.equal(before.data.member.full_name, '');
+
+    const { state } = await startGoogle(c);
+    const cb = await c.get(`/api/auth/google/callback?code=${encodeURIComponent(`ok:${email}`)}&state=${encodeURIComponent(state)}`);
+    assert.equal(cb.status, 302, cb.text);
+    assert.equal(cb.headers.get('location'), '/account');
+    const me = await c.get('/api/me');
+    assert.equal(me.data.member.email, email);
+    assert.equal(me.data.member.emailVerified, true);
+    assert.equal(me.data.member.googleLinked, true);
+    assert.equal(me.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.googlePicture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.givenName, 'Google');
+    assert.equal(me.data.member.familyName, 'Tester');
+    assert.equal(me.data.member.full_name, 'Google Tester', 'blank campaign name is filled from Google');
+    assert.equal(me.data.member.locale, 'en');
+    assert.equal(me.data.member.createdAt, before.data.member.createdAt, 'same member row, not a duplicate');
   });
 
   test('Google on an existing email logs into that member and keeps their name', async () => {
