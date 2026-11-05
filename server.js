@@ -17,6 +17,7 @@ import { securityHeaders } from './security.js';
 import { staticFiles } from './static.js';
 import { sessionMiddleware, cookieOptions, COOKIE_NAME, REFRESH_MS } from './session.js';
 import { createGoogle, STATE_COOKIE, googleErrorRedirect, parseGoogleProfile } from './google.js';
+import { sniffImage, PHOTO_MAX_BYTES } from './photo.js';
 import { validateProfile, parseIdentifier, normalizePhone, isEmail, STATES, GENDERS, INTERESTS } from './validate.js';
 import { mountVolunteer, createRoleOf } from './volunteer.js';
 
@@ -146,7 +147,11 @@ const publicMember = (m) => {
     phone: m.phone || '', phoneVerified: Boolean(m.phone_verified),
     createdAt: m.created_at,
     profileComplete: Boolean(m.consent_at),
-    picture: m.google_picture || '',
+    hasCustomPhoto: Boolean(m.photo_mime),
+    googlePicture: m.google_picture || '',
+    picture: m.photo_mime
+      ? `/api/me/photo?t=${m.photo_updated_at || 0}`
+      : (m.google_picture || ''),
     givenName: m.given_name || '',
     familyName: m.family_name || '',
     locale: m.locale || '',
@@ -204,7 +209,8 @@ const h = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(
 // Basic CSRF defence: state-changing API calls must be JSON (forms can't send that
 // cross-site without a CORS preflight) and the session cookie is SameSite=Lax.
 app.use('/api', (req, res, next) => {
-  if (req.method === 'POST' && !req.is('application/json')) {
+  const photoPost = req.method === 'POST' && String(req.originalUrl || '').split('?')[0] === '/api/me/photo';
+  if (req.method === 'POST' && !req.is('application/json') && !photoPost) {
     return res.status(415).json({ error: 'Expected JSON.' });
   }
   res.set('Cache-Control', 'no-store');
@@ -529,6 +535,40 @@ app.post('/api/me', h(async (req, res) => {
 
   await store.updateProfile(m.id, profile, Date.now());
   res.json({ member: await memberJson(await store.memberById(m.id)) });
+}));
+
+const photoBody = express.raw({
+  type: (req) => /^(image\/(jpeg|jpg|png|webp)|application\/octet-stream)$/i.test(String(req.headers['content-type'] || '').split(';')[0].trim()),
+  limit: PHOTO_MAX_BYTES,
+});
+
+app.get('/api/me/photo', h(async (req, res) => {
+  if (!req.member) return res.status(401).json({ error: 'Please log in.' });
+  const row = await store.getPhoto(req.member.id);
+  if (!row?.photo || !row.photo_mime) return res.status(404).json({ error: 'No custom photo.' });
+  const bytes = Buffer.isBuffer(row.photo) ? row.photo : Buffer.from(row.photo);
+  res.set({
+    'Content-Type': row.photo_mime,
+    'Cache-Control': 'private, max-age=86400',
+  });
+  res.end(bytes);
+}));
+
+app.post('/api/me/photo', photoBody, h(async (req, res) => {
+  if (!req.member) return res.status(401).json({ error: 'Please log in.' });
+  const bytes = Buffer.isBuffer(req.body) ? req.body
+    : (req.body instanceof Uint8Array ? Buffer.from(req.body) : Buffer.alloc(0));
+  if (!bytes.length) return res.status(400).json({ error: 'Choose a JPEG, PNG or WebP photo.' });
+  const mime = sniffImage(bytes);
+  if (!mime) return res.status(400).json({ error: 'Please use a JPEG, PNG or WebP photo.' });
+  const member = await store.setPhoto(req.member.id, bytes, mime);
+  res.json({ member: await memberJson(member) });
+}));
+
+app.delete('/api/me/photo', h(async (req, res) => {
+  if (!req.member) return res.status(401).json({ error: 'Please log in.' });
+  const member = await store.clearPhoto(req.member.id);
+  res.json({ member: await memberJson(member) });
 }));
 
 // ---- Linking a second email/phone to my account ------------------------------

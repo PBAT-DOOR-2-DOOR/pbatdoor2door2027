@@ -74,8 +74,15 @@ export function safeMemberPicture(url) {
   }
 }
 
+/** Custom upload (`/api/me/photo`) wins over the Google picture. */
+export function memberPicture(m) {
+  const p = String(m?.picture || '');
+  if (p.startsWith('/api/me/photo')) return p;
+  return safeMemberPicture(p || m?.googlePicture);
+}
+
 export function avatarMarkup(m, cls = 'user-avatar') {
-  const pic = safeMemberPicture(m?.picture);
+  const pic = memberPicture(m);
   if (pic) return `<img class="${cls}" src="${escHtml(pic)}" alt="" referrerpolicy="no-referrer">`;
   return `<span class="${cls}">${escHtml(initials(m || {}))}</span>`;
 }

@@ -170,6 +170,13 @@ legend { font: 700 13px var(--body); text-transform: uppercase; letter-spacing: 
 .chips input { width: auto; accent-color: var(--green); margin: 0; }
 .chips label:has(input:checked) { border-color: var(--green); background: var(--green-soft); }
 .consent { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; color: var(--muted); }
+.photo-edit { display: flex; align-items: center; gap: 16px; margin: 0 0 22px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--green-soft); }
+.photo-edit .avatar { margin: 0; width: 64px; height: 64px; font-size: 22px; flex: none; }
+.photo-edit-copy { display: grid; gap: 4px; min-width: 0; }
+.photo-edit-copy strong { font: 700 15px var(--display); }
+.photo-edit-copy > span { font-size: 13px; color: var(--muted); }
+.photo-edit-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.photo-edit .err { color: var(--err); font-size: 13px; min-height: 0; }
 .consent input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--green); flex: none; }
 
 .msg { margin-top: 14px; font-size: 14px; padding: 10px 12px; border-radius: 8px; display: none; }

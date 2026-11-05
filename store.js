@@ -12,7 +12,7 @@ export const PROFILE_FIELDS = [
 
 export const GOOGLE_FIELDS = ['google_id', 'google_picture', 'given_name', 'family_name', 'locale', 'hd'];
 
-const MEMBER_COLS = `id, email, email_verified, phone, phone_verified, ${PROFILE_FIELDS.join(', ')}, ${GOOGLE_FIELDS.join(', ')}, consent_at, join_consent_at, sms_consent_at, created_at`;
+const MEMBER_COLS = `id, email, email_verified, phone, phone_verified, ${PROFILE_FIELDS.join(', ')}, ${GOOGLE_FIELDS.join(', ')}, photo_mime, photo_updated_at, consent_at, join_consent_at, sms_consent_at, created_at`;
 
 const QUERIES = {
   getCode: 'SELECT * FROM otp_codes WHERE identifier = $1',
@@ -48,6 +48,11 @@ const QUERIES = {
                 sms_consent_at = $${PROFILE_FIELDS.length + GOOGLE_FIELDS.length + 8},
                 created_at = $${PROFILE_FIELDS.length + GOOGLE_FIELDS.length + 9} WHERE id = $1`,
   clearGoogleId: 'UPDATE members SET google_id = NULL WHERE google_id = $1 AND id <> $2',
+  getPhoto: 'SELECT photo, photo_mime, photo_updated_at FROM members WHERE id = $1',
+  setPhoto: `UPDATE members SET photo = $2, photo_mime = $3, photo_updated_at = $4 WHERE id = $1
+             RETURNING ${MEMBER_COLS}`,
+  clearPhoto: `UPDATE members SET photo = NULL, photo_mime = '', photo_updated_at = NULL WHERE id = $1
+               RETURNING ${MEMBER_COLS}`,
   applyGoogle: `UPDATE members SET
                   google_id = CASE WHEN $2 <> '' THEN $2 ELSE google_id END,
                   google_picture = CASE WHEN $3 <> '' THEN $3 ELSE google_picture END,
@@ -140,7 +145,7 @@ const QUERIES = {
 
 // BIGINT comes back from pg as a string; turn numeric columns back into numbers.
 const NUMERIC = new Set(['id', 'member_id', 'created_at', 'expires_at', 'sent_at', 'last_seen', 'attempts',
-  'consent_at', 'join_consent_at', 'sms_consent_at', 'email_verified', 'phone_verified',
+  'consent_at', 'join_consent_at', 'sms_consent_at', 'email_verified', 'phone_verified', 'photo_updated_at',
   'visits', 'households', 'people', 'pledges', 'volunteers', 'pu_count', 'ward_count', 'lga_count',
   'state_count', 'assigned_at', 'assigned_by']);
 const fixRow = (r) => {
@@ -273,6 +278,11 @@ export function createStore(pool) {
       await q('moveVisits', [drop.id, keep.id], c);
       await q('movePledges', [drop.id, keep.id], c);
       await q('moveRole', [drop.id, keep.id], c);
+      const keepPhoto = await one('getPhoto', [keep.id], c);
+      const dropPhoto = await one('getPhoto', [drop.id], c);
+      if (!keepPhoto?.photo_mime && dropPhoto?.photo_mime) {
+        await q('setPhoto', [keep.id, dropPhoto.photo, dropPhoto.photo_mime, dropPhoto.photo_updated_at || Date.now()], c);
+      }
       await q('deleteMember', [drop.id], c);                    // frees its verified contacts for the keeper
       await q('mergeInto', [keep.id, email[0], email[1], phone[0], phone[1],
         ...PROFILE_FIELDS.map((f) => keep[f] || drop[f] || ''),
@@ -354,6 +364,10 @@ export function createStore(pool) {
 
     updateProfile: (id, profile, now) =>
       q('updateProfile', [id, ...PROFILE_FIELDS.map((f) => profile[f] ?? ''), now]),
+
+    getPhoto: (id) => one('getPhoto', [id]),
+    setPhoto: (id, bytes, mime, now = Date.now()) => one('setPhoto', [id, bytes, mime, now]),
+    clearPhoto: (id) => one('clearPhoto', [id]),
 
     insertSession: (hash, memberId, now, ua) => q('insertSession', [hash, memberId, now, now, ua]),
     getSession: (hash) => one('getSession', [hash]),

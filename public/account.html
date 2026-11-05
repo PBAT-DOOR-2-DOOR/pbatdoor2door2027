@@ -82,6 +82,19 @@
 
           <form class="card" id="edit-form" hidden novalidate>
             <div class="card-head"><h2 id="form-title">Edit my details</h2></div>
+            <div class="photo-edit" id="photo-edit">
+              <div class="avatar" id="photo-preview"></div>
+              <div class="photo-edit-copy">
+                <strong>Profile photo</strong>
+                <span id="photo-hint">Your Google photo is used until you upload your own.</span>
+                <div class="photo-edit-actions">
+                  <input type="file" id="photo-file" accept="image/jpeg,image/png,image/webp" hidden>
+                  <button type="button" class="btn small" id="photo-pick">Upload photo</button>
+                  <button type="button" class="btn small ghost" id="photo-clear" hidden>Use Google photo</button>
+                </div>
+                <div class="err" id="photo-err"></div>
+              </div>
+            </div>
             <div id="fields"></div>
             <label class="consent" id="consent-row" hidden>
               <input type="checkbox" id="consent">
@@ -147,7 +160,7 @@
 <footer class="site" id="site-footer"></footer>
 
 <script type="module">
-  import { $, api, fetchMe, setLoading, message, renderProfileFields, readProfileFields, checkProfile, showFieldErrors, prettyPhone, mountNav, toast, logout, createOtp, cooldown, devCodeNote, sentText, mountFooter, safeMemberPicture } from '/app.js';
+  import { $, api, fetchMe, setLoading, message, renderProfileFields, readProfileFields, checkProfile, showFieldErrors, prettyPhone, mountNav, toast, logout, createOtp, cooldown, devCodeNote, sentText, mountFooter, memberPicture } from '/app.js';
   import { firebasePhone } from '/phone.js';
   import { normalizePhone, isEmail } from '/validate.js';
 
@@ -187,20 +200,8 @@
 
   function render() {
     const contact = user.emailVerified ? user.email : prettyPhone(user.phone) || user.email;
-    const pic = safeMemberPicture(user.picture);
-    const avatar = $('#avatar');
-    avatar.replaceChildren();
-    if (pic) {
-      const img = document.createElement('img');
-      img.src = pic;
-      img.alt = '';
-      img.referrerPolicy = 'no-referrer';
-      avatar.append(img);
-      avatar.classList.add('has-photo');
-    } else {
-      avatar.classList.remove('has-photo');
-      avatar.textContent = user.full_name ? user.full_name.split(' ').map((w) => w[0]).slice(0, 2).join('') : (user.email ? user.email[0].toUpperCase() : '👤');
-    }
+    paintAvatar($('#avatar'), user);
+    paintPhotoEdit();
     $('#name').textContent = user.full_name || 'New member';
     $('#email').textContent = contact;
     $('#greet').textContent = user.profileComplete ? 'Welcome back' : 'Welcome to the movement';
@@ -262,6 +263,43 @@
   }
   $('#boot').hidden = true; $('#content').hidden = false;
 
+  function paintAvatar(el, member) {
+    const pic = memberPicture(member);
+    el.replaceChildren();
+    if (pic) {
+      const img = document.createElement('img');
+      img.src = pic;
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      el.append(img);
+      el.classList.add('has-photo');
+    } else {
+      el.classList.remove('has-photo');
+      el.textContent = member.full_name ? member.full_name.split(' ').map((w) => w[0]).slice(0, 2).join('') : (member.email ? member.email[0].toUpperCase() : '👤');
+    }
+  }
+  function paintPhotoEdit() {
+    paintAvatar($('#photo-preview'), user);
+    const custom = Boolean(user.hasCustomPhoto);
+    const google = Boolean(user.googlePicture);
+    $('#photo-hint').textContent = custom
+      ? (google ? 'This photo replaces your Google picture.' : 'This photo is stored on your account.')
+      : (google ? 'Your Google photo is used until you upload your own.' : 'Add a photo, or we will use your initial.');
+    $('#photo-clear').hidden = !custom;
+    $('#photo-clear').textContent = google ? 'Use Google photo' : 'Remove photo';
+    $('#photo-err').textContent = '';
+  }
+  async function sendPhoto(file) {
+    const res = await fetch('/api/me/photo', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    return { ok: res.ok, status: res.status, data };
+  }
+
   // Edit details
   const fields = $('#fields');
   function openForm() {
@@ -272,9 +310,43 @@
     $('#consent-row').hidden = !first; $('#consent').checked = false;
     $('#save').querySelector('span:last-child').textContent = first ? 'Save my details' : 'Save changes';
     $('#prompt').hidden = true;
-    $('#view').hidden = true; $('#edit-form').hidden = false; $('#f-full_name').focus();
+    $('#view').hidden = true; $('#edit-form').hidden = false;
+    paintPhotoEdit();
+    $('#f-full_name').focus();
     $('#edit-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
+  $('#photo-pick').addEventListener('click', () => { $('#photo-err').textContent = ''; $('#photo-file').click(); });
+  $('#photo-file').addEventListener('change', async () => {
+    const file = $('#photo-file').files[0];
+    $('#photo-file').value = '';
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      $('#photo-err').textContent = 'Please choose a photo under 2 MB.';
+      return;
+    }
+    const btn = $('#photo-pick'); setLoading(btn, true);
+    const res = await sendPhoto(file);
+    setLoading(btn, false);
+    if (!res.ok) {
+      $('#photo-err').textContent = res.data.error || 'We could not save that photo. Try a JPEG, PNG or WebP.';
+      return;
+    }
+    user = res.data.member; paintPhotoEdit(); paintAvatar($('#avatar'), user); mountNav({ member: user });
+    toast('✓ Photo saved');
+  });
+  $('#photo-clear').addEventListener('click', async () => {
+    const btn = $('#photo-clear'); setLoading(btn, true);
+    const res = await fetch('/api/me/photo', { method: 'DELETE', credentials: 'same-origin' });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    setLoading(btn, false);
+    if (!res.ok) {
+      $('#photo-err').textContent = data.error || 'We could not remove that photo.';
+      return;
+    }
+    user = data.member; paintPhotoEdit(); paintAvatar($('#avatar'), user); mountNav({ member: user });
+    toast(user.googlePicture ? '✓ Using your Google photo' : '✓ Photo removed');
+  });
   $('#edit').addEventListener('click', openForm);
   $('#prompt-btn').addEventListener('click', openForm);
   if (location.hash === '#edit') { history.replaceState(null, '', '/account'); openForm(); }

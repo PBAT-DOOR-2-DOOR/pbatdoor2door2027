@@ -41,11 +41,11 @@ function client(base = SITE, extraHeaders = {}) {
         redirect: 'manual',
         headers: {
           'User-Agent': 'pbat-e2e',
-          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          ...(body !== undefined && !Buffer.isBuffer(body) ? { 'Content-Type': 'application/json' } : {}),
           ...(cookie ? { Cookie: cookie } : {}),
           ...extraHeaders, ...headers,
         },
-        body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+        body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : typeof body === 'string' ? body : JSON.stringify(body),
       });
       for (const set of res.headers.getSetCookie()) {
         const eq = set.indexOf('=');
@@ -64,9 +64,27 @@ function client(base = SITE, extraHeaders = {}) {
     },
     get: (p, h) => c.req('GET', p, undefined, h),
     post: (p, b = {}, h) => c.req('POST', p, b, h),
+    async getBuf(path, headers = {}) {
+      const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
+      const res = await fetch(base + path, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: {
+          'User-Agent': 'pbat-e2e',
+          ...(cookie ? { Cookie: cookie } : {}),
+          ...extraHeaders, ...headers,
+        },
+      });
+      return { status: res.status, buf: Buffer.from(await res.arrayBuffer()), headers: res.headers };
+    },
   };
   return c;
 }
+
+const PNG_1x1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSjAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+);
 
 /** The latest code the mock delivered to `to`, and how: { code, channel: 'email' | 'whatsapp' | 'voice' | 'sms' }. */
 async function delivered(to) {
@@ -437,7 +455,35 @@ if (PHASE === 'main') {
     assert.equal(me.data.member.full_name, 'Ada Test Obi', 'do not overwrite a name the member already filled');
     assert.equal(me.data.member.givenName, 'Google');
     assert.equal(me.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.googlePicture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+    assert.equal(me.data.member.hasCustomPhoto, false);
     assert.equal(me.data.member.googleLinked, true);
+  });
+
+  test('custom photo is stored as bytes and beats the Google picture until cleared', async () => {
+    assert.equal((await client().get('/api/me/photo')).status, 401);
+    const before = await devA1.get('/api/me');
+    assert.equal(before.data.member.hasCustomPhoto, false);
+    assert.equal(before.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+
+    const junk = await devA1.req('POST', '/api/me/photo', Buffer.from('not-an-image'), { 'Content-Type': 'image/png' });
+    assert.equal(junk.status, 400);
+
+    const ok = await devA1.req('POST', '/api/me/photo', PNG_1x1, { 'Content-Type': 'image/png' });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.data.member.hasCustomPhoto, true);
+    assert.match(ok.data.member.picture, /^\/api\/me\/photo\?t=/);
+    assert.equal(ok.data.member.googlePicture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto');
+
+    const pic = await devA1.getBuf('/api/me/photo');
+    assert.equal(pic.status, 200);
+    assert.equal(pic.headers.get('content-type'), 'image/png');
+    assert.deepEqual(pic.buf, PNG_1x1);
+
+    const gone = await devA1.req('DELETE', '/api/me/photo');
+    assert.equal(gone.status, 200, gone.text);
+    assert.equal(gone.data.member.hasCustomPhoto, false);
+    assert.equal(gone.data.member.picture, 'https://lh3.googleusercontent.com/a/ACg8ocTestPhoto', 'clearing custom photo falls back to Google');
   });
 
   test('signed-in phone member: free Google email attaches; colliding email logs into that member', async () => {
