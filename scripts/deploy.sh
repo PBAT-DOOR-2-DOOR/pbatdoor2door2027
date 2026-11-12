@@ -67,7 +67,14 @@ reload_caddy() {
     echo "deploy: caddy isn't running; nothing to reload" >&2
     return 0
   fi
-  docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+  # First deploy after a compose change recreates Caddy; wait until reload can talk to it.
+  for _ in $(seq 1 15); do
+    if docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
 }
 
 wait_healthy() {
