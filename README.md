@@ -276,6 +276,12 @@ cd /opt/pbatdoor2door && scripts/deploy.sh
 
 Changing only `.env`: `docker compose up -d` (recreates the containers whose settings changed).
 
+Caddy is reloaded at the end of every deploy (`caddy reload`, graceful), so changes in `deploy/caddy/` go live with the next push. If Caddy refuses the new settings, the deploy exits with code 3 and the previous settings keep running: check with `docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile`.
+
+**Zoni radio (`https://zoni.pbatdoor2door2027.org/radio/`)** is answered by this Caddy, before Zoni (`deploy/caddy/zoni.caddy`):
+- `/radio/` is the radio page, `deploy/caddy/radio/index.html` (live player, past episodes, download, WhatsApp share, "Back to Zoni").
+- `/radio/episodes.json`, `/radio/feed.xml` and `/radio/episodes/*.mp3` come from `/opt/zoni/radio` (`ZONI_RADIO_DIR`), mounted read-only. Zoni writes that folder: it records each broadcast off air and Admins upload past episodes in Zoni (Home → Manage episodes). Nothing else in the folder is served.
+
 Keeping the server patched: security updates install automatically. For Docker and other packages, occasionally run `sudo apt update && sudo apt upgrade` and reboot when asked; all containers restart on their own (`restart: unless-stopped`). To pick up newer base images (Node, Postgres minor, Caddy), run `docker compose pull && scripts/deploy.sh --no-pull`.
 
 ### Automatic deploys (GitHub Actions)
