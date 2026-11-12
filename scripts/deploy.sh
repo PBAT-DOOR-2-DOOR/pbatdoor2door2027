@@ -3,7 +3,9 @@
 #   scripts/deploy.sh            # pull the current branch, rebuild, restart, health-check
 #   scripts/deploy.sh --no-pull  # rebuild and restart what's checked out
 # If the new version doesn't become healthy, the previous image is started again.
-# Exits non-zero on any failure (2 = app healthy but HTTPS through Caddy not answering).
+# Caddy is reloaded every time, so changes in deploy/caddy/ (Caddyfile, zoni.caddy, the radio page) go live.
+# Exits non-zero on any failure (2 = app healthy but HTTPS through Caddy not answering,
+# 3 = Caddy refused the new deploy/caddy/ settings; the previous ones keep running).
 #
 # Also run by GitHub Actions as the SSH forced command for the CI deploy key (see README, section 6),
 # so it must never prompt: no TTY, no stdin, and the ssh client's command line is ignored.
@@ -38,6 +40,10 @@ if [ -z "${BREVO_API_KEY:-}${ZEPTOMAIL_TOKEN:-}${RESEND_API_KEY:-}${GMAIL_SCRIPT
   echo "deploy: WARNING: no email provider set; sign-in emails will not be delivered." >&2
 fi
 mkdir -p "${BACKUP_DIR:-./backups}" && chmod 700 "${BACKUP_DIR:-./backups}"
+# Radio (https://zoni…/radio/): Caddy reads the episodes Zoni writes. Create the folder as this user if Zoni
+# hasn't yet, so Docker doesn't create it owned by root (Zoni, user 1000, must be able to write there).
+mkdir -p "${ZONI_RADIO_DIR:-/opt/zoni/radio}/episodes" 2>/dev/null \
+  || echo "deploy: WARNING: couldn't create ${ZONI_RADIO_DIR:-/opt/zoni/radio}; deploy Zoni first (it creates it)." >&2
 
 if [ "$PULL" = 1 ]; then
   git fetch --prune origin
@@ -54,6 +60,23 @@ echo "deploy: building $REV..."
 docker compose build --pull app
 docker compose up -d --remove-orphans
 
+# Caddy reads deploy/caddy/ only when it starts, and `up -d` leaves it running when only those files changed,
+# so reload it. A reload is graceful (no dropped connections); a broken config is refused and the old one stays.
+reload_caddy() {
+  if [ -z "$(docker compose ps -q caddy 2>/dev/null)" ]; then
+    echo "deploy: caddy isn't running; nothing to reload" >&2
+    return 0
+  fi
+  # First deploy after a compose change recreates Caddy; wait until reload can talk to it.
+  for _ in $(seq 1 15); do
+    if docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 wait_healthy() {
   for _ in $(seq 1 60); do
     status="$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q app)" 2>/dev/null || true)"
@@ -64,6 +87,12 @@ wait_healthy() {
 }
 
 if wait_healthy; then
+  if ! reload_caddy; then
+    echo "deploy: ERROR: Caddy refused the new settings in deploy/caddy/; it is still running the previous ones." >&2
+    echo "deploy: check with: docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile" >&2
+    exit 3
+  fi
+  echo "deploy: Caddy reloaded (deploy/caddy/)"
   echo "deploy: app $REV is healthy; checking HTTPS through Caddy..."
   for _ in $(seq 1 30); do
     if curl -fsS --max-time 5 --resolve "${SITE_DOMAIN}:443:127.0.0.1" "https://${SITE_DOMAIN}/readyz" > /dev/null 2>&1; then

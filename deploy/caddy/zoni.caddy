@@ -6,12 +6,41 @@ zoni.pbatdoor2door2027.org {
 		max_size 10MB
 	}
 
-	reverse_proxy 127.0.0.1:3100 {
-		header_up X-Forwarded-For {client_ip}
-		header_up -CF-Connecting-IP
-		transport http {
-			dial_timeout 5s
-			keepalive 30s
+	# Radio ("Wetin Tinubu Don Do Sef"), answered here, before Zoni:
+	#   /radio/                   the radio page: deploy/caddy/radio (mounted at /etc/caddy/radio)
+	#   /radio/episodes.json      the episode list   } written by Zoni into /opt/zoni/radio
+	#   /radio/feed.xml           the podcast feed   } (mounted read-only at /srv/zoni-radio):
+	#   /radio/episodes/*.mp3     the recordings     } recorded off air every air day, or uploaded by an Admin
+	# Nothing else in that folder is served (no listings, no work-in-progress files).
+	redir /radio /radio/ 308
+	handle_path /radio/* {
+		@data path /episodes.json /feed.xml /episodes/*
+		handle @data {
+			root * /srv/zoni-radio
+			header /episodes.json Cache-Control "no-cache"
+			header /feed.xml Cache-Control "no-cache"
+			header /episodes/* Cache-Control "public, max-age=3600"
+			header X-Content-Type-Options nosniff
+			file_server
+		}
+		handle {
+			root * /etc/caddy/radio
+			header Cache-Control "no-cache"
+			header X-Content-Type-Options nosniff
+			header Referrer-Policy same-origin
+			header X-Frame-Options SAMEORIGIN
+			file_server
+		}
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3100 {
+			header_up X-Forwarded-For {client_ip}
+			header_up -CF-Connecting-IP
+			transport http {
+				dial_timeout 5s
+				keepalive 30s
+			}
 		}
 	}
 
@@ -22,3 +51,4 @@ zoni.pbatdoor2door2027.org {
 		format json
 	}
 }
+

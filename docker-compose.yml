@@ -88,6 +88,8 @@ services:
       CADDY_GLOBAL_OPTIONS: ${CADDY_GLOBAL_OPTIONS:-}
     volumes:
       - ./deploy/caddy:/etc/caddy:ro
+      # Radio episodes for https://zoni…/radio/: Zoni (compose project /opt/zoni) writes them; Caddy only reads.
+      - ${ZONI_RADIO_DIR:-/opt/zoni/radio}:/srv/zoni-radio:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
