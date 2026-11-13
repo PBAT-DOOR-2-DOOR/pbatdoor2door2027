@@ -1,7 +1,9 @@
 # Extra site on the shared Caddy. App: second compose project at /opt/zoni, port 3100.
-# Cloudflare DNS for this name must be grey (DNS only) so HTTP-01 certificates work.
+# Hostnames: zoni.africa (+ www) and legacy zoni.pbatdoor2door2027.org.
+# DNS A for @ and www must point at the Linode (grey-cloud / not proxied) for Let's Encrypt HTTP-01.
 # Orange proxy later only with PROXY_MODE=cloudflare (CF-Connecting-IP).
-zoni.pbatdoor2door2027.org {
+
+(zoni_site) {
 	request_body {
 		max_size 10MB
 	}
@@ -50,5 +52,9 @@ zoni.pbatdoor2door2027.org {
 		output stdout
 		format json
 	}
+}
+
+zoni.africa, www.zoni.africa, zoni.pbatdoor2door2027.org {
+	import zoni_site
 }
 
