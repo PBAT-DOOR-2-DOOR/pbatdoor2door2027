@@ -8,76 +8,13 @@
 <meta name="theme-color" content="#2f5bea">
 <link rel="alternate" type="application/rss+xml" title="Wetin Tinubu Don Do Sef (podcast)" href="/radio/feed.xml">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/radio/styles.css?v=1">
 <!--
-  The radio page. Served by Caddy (deploy/caddy/radio), not by Zoni. It reads /radio/episodes.json, which Zoni writes:
-  the programme's times and stream, and every episode (recorded off air each air day, or uploaded by an Admin in Zoni).
-  The browser plays the live stream straight from the station. Times are always Africa/Lagos (WAT, UTC+1).
+  Radio page (Caddy file_server from /opt/zoni/radio). episodes.json, feed.xml and recordings are written by Zoni.
+  Live stream does not autoplay; user must tap Listen live. Times are Africa/Lagos (WAT).
 -->
-<style>
-  :root { --bg: #f6f7f9; --surface: #fff; --surface-2: #f9fafb; --ink: #111827; --ink-2: #374151; --muted: #4b5563; --line: #e5e7eb; --line-2: #eef0f3;
-    --accent: #2f5bea; --accent-hover: #2349c8; --accent-soft: #eef2fe; --ring: rgba(47, 91, 234, .18); --red: #d92d20; --green: #128c4a; --r: 12px; }
-  * { box-sizing: border-box; }
-  [hidden] { display: none !important; }
-  html { -webkit-text-size-adjust: 100%; }
-  body { margin: 0; font: 15px/1.5 Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; color: var(--ink); background: var(--bg); -webkit-font-smoothing: antialiased; }
-  a { color: var(--accent); }
-  button { font: inherit; }
-  .wrap { max-width: 760px; margin: 0 auto; padding: 16px max(16px, env(safe-area-inset-left)) 120px max(16px, env(safe-area-inset-right)); }
-  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; margin-bottom: 8px; }
-  .back { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; text-decoration: none; padding: 6px 10px 6px 6px; border-radius: 8px; }
-  .back:hover { background: var(--accent-soft); }
-  .brand { font-weight: 650; color: var(--ink-2); font-size: 13px; letter-spacing: .02em; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 20px; box-shadow: 0 1px 2px rgba(16, 24, 40, .05); margin-bottom: 16px; }
-  .hero { display: flex; gap: 16px; align-items: center; }
-  .big { flex: none; width: 64px; height: 64px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; display: grid; place-items: center; cursor: pointer; box-shadow: 0 6px 16px -6px rgba(47, 91, 234, .6); }
-  .big:hover { background: var(--accent-hover); }
-  .big.on { background: var(--red); box-shadow: 0 6px 16px -6px rgba(217, 45, 32, .6); }
-  .big svg { width: 26px; height: 26px; fill: currentColor; }
-  button:focus-visible, a:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--ring); }
-  .kicker { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-  h1 { margin: 2px 0; font-size: 24px; line-height: 1.2; letter-spacing: -.015em; }
-  .sub { margin: 0; color: var(--muted); font-size: 13.5px; }
-  .status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 16px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line-2); }
-  .fine { font-size: 13px; color: var(--muted); }
-  .onair { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 12.5px; letter-spacing: .06em; color: #fff; background: var(--red); padding: 3px 10px 3px 8px; border-radius: 999px; }
-  .onair i { width: 8px; height: 8px; border-radius: 50%; background: #fff; animation: pulse 1.2s ease-in-out infinite; }
-  @keyframes pulse { 50% { opacity: .35; transform: scale(.7); } }
-  @media (prefers-reduced-motion: reduce) { .onair i { animation: none; } }
-  .count { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
-  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 12px; }
-  .vol { display: inline-flex; align-items: center; gap: 8px; }
-  .vol input { width: 150px; accent-color: var(--accent); }
-  .msg { font-size: 13px; color: var(--muted); }
-  h2 { margin: 0 0 6px; font-size: 16px; }
-  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-  .eps { list-style: none; margin: 0; padding: 0; }
-  .eps li { display: flex; align-items: center; gap: 10px; padding: 10px 6px; border-top: 1px solid var(--line-2); border-radius: 8px; scroll-margin-top: 16px; }
-  .eps li:first-child { border-top: 0; }
-  .eps li.target { background: var(--accent-soft); }
-  .mini { flex: none; width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--accent); display: grid; place-items: center; cursor: pointer; }
-  .mini:hover { background: var(--accent-soft); }
-  .mini.on { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .mini svg { width: 15px; height: 15px; fill: currentColor; }
-  .t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .t b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .t .d { font-size: 13px; color: var(--muted); }
-  .t .desc { font-size: 13px; color: var(--ink-2); margin-top: 2px; }
-  .icon { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: var(--accent); text-decoration: none; }
-  .icon:hover { background: var(--accent-soft); }
-  .icon.wa { color: var(--green); }
-  .icon.wa:hover { background: #ecfdf3; }
-  .icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-  .empty { color: var(--muted); padding: 8px 0; }
-  .player { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -8px 24px -12px rgba(16, 24, 40, .2);
-    padding: 10px max(16px, env(safe-area-inset-left)) max(10px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-right)); }
-  .player .in { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 4px; }
-  .player .now { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13.5px; }
-  .player .now span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .player audio { width: 100%; height: 40px; }
-  .linkish { background: none; border: 0; padding: 4px 6px; color: var(--accent); cursor: pointer; font-weight: 600; border-radius: 6px; }
-  .foot { text-align: center; font-size: 12.5px; color: var(--muted); margin-top: 20px; }
-  @media (max-width: 520px) { .t b { white-space: normal; } h1 { font-size: 20px; } .big { width: 56px; height: 56px; } .card { padding: 16px; } .vol input { width: 120px; } }
-</style>
 </head>
 <body>
 <div class="wrap">
@@ -86,149 +23,50 @@
     <span class="brand">PBAT · Radio</span>
   </div>
 
-  <section class="card" aria-labelledby="title">
-    <div class="hero">
-      <button class="big" id="live" type="button" aria-label="Play the live stream"></button>
-      <div>
+  <section class="live-card" aria-labelledby="title">
+    <div class="live-hero">
+      <div class="live-visual">
+        <button type="button" class="live-btn" id="live-circle" aria-label="Play the live stream"></button>
+        <span class="live-waves" aria-hidden="true"></span>
+      </div>
+      <div class="live-copy">
         <p class="kicker">Radio</p>
-        <h1 id="title">Wetin Tinubu Don Do Sef</h1>
+        <div class="live-title-row">
+          <h1 id="title">Wetin Tinubu Don Do Sef</h1>
+          <span class="onair" id="onair-badge" hidden><i></i>ON AIR</span>
+        </div>
         <p class="sub" id="sub">Radio Nigeria Network · Kapital FM 92.9 · 8:45 AM</p>
       </div>
     </div>
     <div class="status" id="status" aria-live="polite"></div>
-    <div class="row">
-      <label class="vol"><span class="fine">Volume</span><input type="range" id="vol" min="0" max="1" step="0.05" aria-label="Volume"></label>
+    <div class="live-actions">
+      <button type="button" class="btn-live" id="listen">Listen live</button>
+      <label class="vol"><span>Volume</span><input type="range" id="vol" min="0" max="1" step="0.05" aria-label="Live volume" disabled></label>
       <span class="msg" id="msg" role="status"></span>
     </div>
   </section>
 
-  <section class="card" aria-labelledby="eps-h">
-    <div class="head"><h2 id="eps-h">Past episodes</h2><a class="fine" href="/radio/feed.xml">Podcast feed</a></div>
-    <ul class="eps" id="eps"><li class="empty">Loading episodes…</li></ul>
+  <section aria-labelledby="eps-h">
+    <div class="section-head">
+      <h2 id="eps-h">Past episodes</h2>
+      <a class="fine" href="/radio/feed.xml">Podcast feed</a>
+    </div>
+    <ul class="ep-grid" id="ep-grid"><li class="empty">Loading episodes…</li></ul>
   </section>
 
   <p class="foot">Times are Nigeria time (WAT). The station plays all day; the programme is on in its slot.</p>
 </div>
 
-<div class="player" id="player" hidden>
+<audio id="live-audio" preload="none" playsinline hidden></audio>
+
+<div class="ep-player" id="ep-player" hidden>
   <div class="in">
-    <div class="now"><span id="now"></span><button class="linkish" id="stop" type="button">Stop</button></div>
-    <audio id="audio" preload="none" controls></audio>
+    <div class="ep-now"><span id="ep-now"></span><button type="button" class="linkish" id="stop-ep">Stop</button></div>
+    <video id="ep-video" controls playsinline preload="metadata" poster="/radio/assets/poster.svg" hidden></video>
+    <audio id="ep-audio" controls preload="metadata" hidden></audio>
   </div>
 </div>
 
-<script>
-'use strict';
-(() => {
-  const $ = (s) => document.querySelector(s);
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const ICON = {
-    play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>',
-    stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></svg>',
-    dl: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
-    wa: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.2-3.6A8 8 0 1 1 8 19z"/><path d="M9 9.5c.3 2 2.5 4.2 4.5 4.5l1-1 1.8.8c-.3 1.2-1.2 1.7-2.3 1.6-2.8-.4-5.6-3.2-6-6-.1-1.1.4-2 1.6-2.3l.8 1.8z"/></svg>',
-  };
-  const TITLE = 'Wetin Tinubu Don Do Sef';
-  let prog = { title: TITLE, station: 'Radio Nigeria Network · Kapital FM 92.9', airDays: [1, 2, 3, 4, 5], airTime: '08:45', durationMin: 15,
-    streamUrl: 'https://cast4.my-control-panel.com/proxy/radioni1/Stream' };
-  let episodes = [], playing = null;            // playing: null | 'live' | episode id
-
-  // "Back to Zoni" when opened from Zoni (/radio/?from=zoni).
-  if (new URLSearchParams(location.search).get('from') === 'zoni') $('#back').hidden = false;
-
-  // ---- Lagos time (UTC+1, no daylight saving): on air now, or the next episode ----
-  const OFF = 3600e3, DAY = 86400e3, DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const minsOf = (t) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || '')); return m ? +m[1] * 60 + +m[2] : 525; };
-  const clock = (t) => { const m = minsOf(t), h = Math.floor(m / 60); return `${h % 12 || 12}:${String(m % 60).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
-  function status(now) {
-    const days = prog.airDays || [], dur = (prog.durationMin || 15) * 60e3, lagos = now + OFF, midnight = lagos - (((lagos % DAY) + DAY) % DAY);
-    for (let d = -1; d <= 7; d++) {
-      const dayStart = midnight + d * DAY;
-      if (!days.includes(new Date(dayStart).getUTCDay())) continue;
-      const start = dayStart + minsOf(prog.airTime) * 60e3 - OFF, end = start + dur;
-      if (end > now) return { onAir: start <= now, start, end };
-    }
-    return { onAir: false, start: null, end: null };
-  }
-  const dayLabel = (start, now) => { const diff = Math.floor((start + OFF) / DAY) - Math.floor((now + OFF) / DAY);
-    return diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : DAYS[new Date(start + OFF).getUTCDay()]; };
-  const countdown = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
-    return d ? `${d} d ${h} h` : h ? `${h} h ${String(m).padStart(2, '0')} m` : m ? `${m} m ${String(x).padStart(2, '0')} s` : `${x} s`; };
-  function paintStatus() {
-    const now = Date.now(), st = status(now);
-    $('#status').innerHTML = st.onAir
-      ? `<span class="onair"><i></i>ON AIR NOW</span><span class="fine">until ${clock(new Date(st.end + OFF).toISOString().slice(11, 16))}</span>`
-      : st.start ? `<span>Next episode: <b>${dayLabel(st.start, now)}, ${clock(prog.airTime)}</b> · in <span class="count">${countdown(st.start - now)}</span></span><span class="fine">Station live · programme off air</span>`
-        : '<span class="fine">Station live</span>';
-  }
-
-  // ---- One player for the live stream and the episodes ----
-  const audio = $('#audio');
-  try { const v = localStorage.getItem('radio-vol'); if (v !== null && +v >= 0 && +v <= 1) audio.volume = +v; } catch {}
-  $('#vol').value = audio.volume;
-  $('#vol').addEventListener('input', (e) => { audio.volume = +e.target.value; try { localStorage.setItem('radio-vol', String(audio.volume)); } catch {} });
-  const say = (t) => { $('#msg').textContent = t || ''; };
-  function stop(note) {
-    audio.pause(); audio.removeAttribute('src'); audio.load();
-    playing = null; $('#player').hidden = true; say(note); paint();
-  }
-  async function play(kind, src, label) {
-    if (playing) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
-    playing = kind; say(kind === 'live' ? 'Connecting…' : ''); paint();
-    audio.src = src; $('#now').innerHTML = label; $('#player').hidden = false;
-    audio.controls = kind !== 'live';          // the live stream has nothing to seek
-    try { await audio.play(); say(''); } catch { if (playing === kind) stop(kind === 'live' ? 'Stream unavailable, try again.' : "This episode won't play right now, try again."); }
-  }
-  audio.addEventListener('error', () => { if (playing && audio.getAttribute('src')) stop(playing === 'live' ? 'Stream unavailable, try again.' : "This episode won't play right now, try again."); });
-  audio.addEventListener('waiting', () => { if (playing === 'live') say('Buffering…'); });
-  audio.addEventListener('playing', () => say(''));
-  audio.addEventListener('ended', () => stop());
-  $('#stop').addEventListener('click', () => stop());
-  $('#live').addEventListener('click', () => (playing === 'live' ? stop()
-    : play('live', `${prog.streamUrl}${prog.streamUrl.includes('?') ? '&' : '?'}t=${Date.now()}`, '<b>Live</b> · ' + esc(prog.station))));
-
-  // ---- Episodes ----
-  const src = (e) => { const p = String(e.path || e.url || ''); return /^(https?:)?\/\//.test(p) || p.startsWith('/') ? p : `/radio/${p.replace(/^\.?\//, '')}`; };
-  const when = (d) => { const t = Date.parse(`${d}T12:00:00Z`); return Number.isFinite(t) ? new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : esc(d); };
-  const len = (s) => `${Math.max(1, Math.round((+s || 0) / 60))} min`;
-  const share = (e) => `https://wa.me/?text=${encodeURIComponent(`🎧 ${e.title || TITLE} ${location.origin}/radio/#${e.id}`)}`;
-  function paint() {
-    const live = playing === 'live';
-    $('#live').className = `big${live ? ' on' : ''}`; $('#live').innerHTML = live ? ICON.stop : ICON.play;
-    $('#live').setAttribute('aria-label', live ? 'Stop the live stream' : 'Play the live stream');
-    const list = $('#eps');
-    if (!episodes.length) { list.innerHTML = '<li class="empty">Episodes appear here after the next broadcast.</li>'; return; }
-    const hash = decodeURIComponent(location.hash.slice(1));
-    list.innerHTML = episodes.map((e) => { const on = playing === e.id;
-      return `<li id="${esc(e.id)}"${hash === e.id ? ' class="target"' : ''}>
-        <button class="mini${on ? ' on' : ''}" type="button" data-ep="${esc(e.id)}" aria-label="${on ? 'Stop' : 'Play'} ${esc(e.title)}">${on ? ICON.stop : ICON.play}</button>
-        <div class="t"><b>${esc(e.title || TITLE)}</b><span class="d">${when(e.date)} · ${len(e.seconds)}</span>${e.description ? `<span class="desc">${esc(e.description)}</span>` : ''}</div>
-        <a class="icon" href="${esc(src(e))}" download="wetin-tinubu-don-do-sef-${esc(e.date || e.id)}.mp3" title="Download" aria-label="Download ${esc(e.title)}">${ICON.dl}</a>
-        <a class="icon wa" href="${esc(share(e))}" target="_blank" rel="noopener" title="Share on WhatsApp" aria-label="Share ${esc(e.title)} on WhatsApp">${ICON.wa}</a>
-      </li>`; }).join('');
-  }
-  $('#eps').addEventListener('click', (ev) => {
-    const b = ev.target.closest('[data-ep]'); if (!b) return;
-    const e = episodes.find((x) => x.id === b.dataset.ep); if (!e) return;
-    playing === e.id ? stop() : play(e.id, src(e), `<b>${esc(e.title || TITLE)}</b> · ${when(e.date)}`);
-  });
-  async function load() {
-    try {
-      const r = await fetch('/radio/episodes.json', { cache: 'no-store' });
-      const d = r.ok ? await r.json() : null;
-      if (d && d.programme) prog = { ...prog, ...d.programme };
-      episodes = (Array.isArray(d && d.episodes) ? d.episodes : []).filter((e) => e && e.id && (e.path || e.url))
-        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
-    } catch { episodes = []; }
-    $('#title').textContent = prog.title || TITLE;
-    $('#sub').textContent = `${prog.station} · ${clock(prog.airTime)}`;
-    paint(); paintStatus();
-    const target = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)));
-    if (target) target.scrollIntoView({ block: 'center' });
-  }
-  paint(); paintStatus(); load();
-  setInterval(paintStatus, 1000);
-})();
-</script>
+<script src="/radio/app.js?v=1"></script>
 </body>
 </html>
