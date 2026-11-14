@@ -1,5 +1,5 @@
 # Extra site on the shared Caddy. App: second compose project at /opt/zoni, port 3100.
-# Hostnames: zoni.africa (+ www) and legacy zoni.pbatdoor2door2027.org.
+# Canonical host: zoni.africa (imports zoni_site). www and legacy hostname 308 to apex (Phase E).
 # DNS A for @ and www must point at the Linode (grey-cloud / not proxied) for Let's Encrypt HTTP-01.
 # Orange proxy later only with PROXY_MODE=cloudflare (CF-Connecting-IP).
 
@@ -45,7 +45,15 @@
 	}
 }
 
-zoni.africa, www.zoni.africa, zoni.pbatdoor2door2027.org {
+zoni.africa {
 	import zoni_site
+}
+
+www.zoni.africa {
+	redir https://zoni.africa{uri} 308
+}
+
+zoni.pbatdoor2door2027.org {
+	redir https://zoni.africa{uri} 308
 }
 
