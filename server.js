@@ -20,6 +20,7 @@ import { createGoogle, STATE_COOKIE, googleErrorRedirect, parseGoogleProfile } f
 import { sniffImage, PHOTO_MAX_BYTES } from './photo.js';
 import { validateProfile, parseIdentifier, normalizePhone, isEmail, STATES, GENDERS, INTERESTS } from './validate.js';
 import { mountVolunteer, createRoleOf } from './volunteer.js';
+import { createPbatFeed } from './pbat-feed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -693,6 +694,17 @@ app.get('/api/events/image/:id(\\d+)', h(async (req, res) => {
   const buf = Buffer.from(await r.arrayBuffer());
   if (buf.length > 6 * 1024 * 1024) return res.status(404).json({ error: 'Not found.' });
   res.set({ 'Content-Type': type, 'Cache-Control': 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' }).send(buf);
+}));
+
+// Like & share (/share): posts from Cloudflare D1. Cached so visitors only ever load this site.
+const pbatFeed = createPbatFeed({
+  accountId: process.env.PBAT_FEED_ACCOUNT_ID,
+  databaseId: process.env.PBAT_FEED_DATABASE_ID,
+  token: process.env.PBAT_FEED_TOKEN,
+  logger,
+});
+app.get('/api/pbat-feed', h(async (req, res) => {
+  res.set('Cache-Control', 'public, max-age=120').json({ items: await pbatFeed.load() });
 }));
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));

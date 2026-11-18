@@ -3,7 +3,7 @@
 //   (text after // is only a note and is ignored by the website.) Leave it empty ('') until you have it:
 //   empty links still show the icon, marked "coming soon".
 export const SOCIAL_LINKS = {
-  facebook: '',    // e.g. 'https://facebook.com/pbatdoortodoor'
+  facebook: 'https://www.facebook.com/share/1MjgsnFQXb/',
   x: 'https://x.com/PBAT2027D2D',
   instagram: 'https://www.instagram.com/pbatdoortodoor2027/',
   tiktok: 'https://www.tiktok.com/@pbatdoortodoor2027',
