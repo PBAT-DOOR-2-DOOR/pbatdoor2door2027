@@ -387,6 +387,7 @@ All settings live in `/opt/pbatdoor2door/.env` (see `.env.example`; never commit
 | `OTP_IP_LIMIT_PER_HOUR` | Codes per visitor IP per hour (default 10). |
 | `OTP_PHONE_LIMIT_PER_DAY` | Codes per phone number per day, sign-in and linking together (default 5). |
 | `SESSION_REFRESH_MS` | How often to re-issue the session cookie (default 1 day). Sessions on the server never expire; only logout deletes them. |
+| `PBAT_FEED_ACCOUNT_ID`, `PBAT_FEED_DATABASE_ID`, `PBAT_FEED_TOKEN` | Like & share page (`/share`). Cloudflare D1 account id, database id and an API token with only "Account > D1 > Read". Leave blank to hide the list. |
 | `NATIONAL_ADMINS` | Comma-separated verified emails/phones who can see every state and appoint coordinators. |
 | `CSP_MODE` | `enforce` (default), `report-only`, or `off`. |
 | `TRUST_PROXY` | Proxy hops in front of the app (default 1 = Caddy). Don't change. |

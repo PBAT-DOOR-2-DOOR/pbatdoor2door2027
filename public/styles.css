@@ -874,3 +874,50 @@ html { scroll-padding-top: 84px; }
 .video { aspect-ratio: 9 / 16; border-radius: var(--radius); overflow: hidden; background: #111; box-shadow: var(--shadow); }
 .video iframe { width: 100%; height: 100%; border: 0; display: block; }
 @media (max-width: 560px) { .videos { grid-template-columns: 1fr; justify-items: center; } .video { width: min(340px, 100%); } }
+
+/* ---- like & share (/share) ---- */
+.share-page { padding: 40px 0 20px; }
+.share-page h1 { font: 800 clamp(30px, 5vw, 42px)/1.1 var(--display); margin: 6px 0 10px; color: var(--green); }
+.share-page .lede { max-width: 68ch; margin: 0; font-size: 17px; color: var(--muted); }
+.share-filters {
+  position: sticky; top: 66px; z-index: 15;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin-top: 18px; padding: 12px 0;
+  background: var(--bg); border-bottom: 1px solid var(--line);
+}
+.share-chip {
+  appearance: none; font: 600 14px var(--body); cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  border-radius: 999px; padding: 8px 14px;
+}
+.share-chip:hover { border-color: var(--green); }
+.share-chip[aria-pressed="true"] { background: var(--green); border-color: var(--green); color: #fff; }
+.share-chip[aria-pressed="true"]:hover { background: var(--green); }
+.share-chip:focus,
+.share-chip:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.share-hide { display: inline-flex; align-items: center; gap: 8px; margin-left: 4px; color: var(--muted); font: 600 14px var(--body); }
+.share-status { color: var(--muted); margin: 14px 0; }
+.share-status:empty { display: none; }
+.share-status.is-note {
+  margin: 14px 0 8px; padding: 18px 20px;
+  background: var(--panel); border: 1px dashed var(--line); border-radius: var(--radius);
+}
+.share-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 16px; margin: 16px 0 8px; }
+.share-card {
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--green);
+  border-radius: var(--radius); padding: 16px 18px 18px;
+  display: flex; flex-direction: column; gap: 8px;
+  transition: opacity .2s, border-color .2s;
+}
+.share-card.is-opened { border-color: #b7beb8; opacity: .75; }
+.share-kicker { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.share-kind { font: 700 12px var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--green); }
+.share-badge { font: 600 12px var(--body); border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 2px 8px; }
+.share-card time { margin-left: auto; color: var(--muted); font-size: 13px; }
+.share-opened { font: 700 12px var(--body); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.share-card h2 { font: 800 20px/1.25 var(--display); margin: 0; }
+.share-handle { margin: 0; color: var(--muted); font-weight: 600; }
+.share-reason, .share-note { margin: 0; }
+.share-note { color: var(--muted); font-size: 14px; }
+.share-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 8px; }
+#social .section-head p + p { margin-top: 18px; }
