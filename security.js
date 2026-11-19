@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import helmet from 'helmet';
+import { GA_SCRIPT, GA_CONNECT, GA_IMG } from './analytics.js';
 
 export function inlineScriptHashes(publicDir) {
   const hashes = new Set();
@@ -20,7 +21,9 @@ export function inlineScriptHashes(publicDir) {
   return [...hashes];
 }
 
-export function securityHeaders({ publicDir, isProd, firebase, turnstile, mode = process.env.CSP_MODE || 'enforce' }) {
+export function securityHeaders({ publicDir, isProd, firebase, turnstile, analytics = false, mode = process.env.CSP_MODE || 'enforce' }) {
+  // Google Analytics (only when a Measurement ID is set, see analytics.js).
+  const ga = (list) => (analytics ? list : []);
   const firebaseScript = firebase ? [new URL(firebase.sdk).origin, 'https://www.google.com', 'https://www.gstatic.com', 'https://apis.google.com'] : [];
   const firebaseConnect = firebase ? [
     'https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com',
@@ -35,12 +38,12 @@ export function securityHeaders({ publicDir, isProd, firebase, turnstile, mode =
 
   const directives = {
     defaultSrc: ["'self'"],
-    scriptSrc: ["'self'", ...inlineScriptHashes(publicDir), ...firebaseScript, ...turnstileOrigins],
+    scriptSrc: ["'self'", ...inlineScriptHashes(publicDir), ...firebaseScript, ...turnstileOrigins, ...ga(GA_SCRIPT)],
     scriptSrcAttr: ["'none'"],
     styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
     fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
-    imgSrc: ["'self'", 'data:', 'blob:', 'https://commons.wikimedia.org', 'https://upload.wikimedia.org', 'https://*.googleusercontent.com'],
-    connectSrc: ["'self'", ...firebaseConnect],
+    imgSrc: ["'self'", 'data:', 'blob:', 'https://commons.wikimedia.org', 'https://upload.wikimedia.org', 'https://*.googleusercontent.com', ...ga(GA_IMG)],
+    connectSrc: ["'self'", ...firebaseConnect, ...ga(GA_CONNECT)],
     frameSrc: frames.length ? frames : ["'none'"],
     workerSrc: ["'self'"],
     manifestSrc: ["'self'"],

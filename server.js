@@ -14,6 +14,7 @@ import { createMailer } from './mailer.js';
 import { createSms } from './sms.js';
 import { loadGeoIndex, nearest } from './geo.js';
 import { securityHeaders } from './security.js';
+import { GA_ID, gaValid, analyticsScript } from './analytics.js';
 import { staticFiles } from './static.js';
 import { sessionMiddleware, cookieOptions, COOKIE_NAME, REFRESH_MS } from './session.js';
 import { createGoogle, STATE_COOKIE, googleErrorRedirect, parseGoogleProfile } from './google.js';
@@ -199,7 +200,7 @@ app.use(pinoHttp({
   },
   customLogLevel: (req, res, err) => (err || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'),
 }));
-app.use(securityHeaders({ publicDir: PUBLIC_DIR, isProd: IS_PROD, firebase: FIREBASE, turnstile: TURNSTILE }));
+app.use(securityHeaders({ publicDir: PUBLIC_DIR, isProd: IS_PROD, firebase: FIREBASE, turnstile: TURNSTILE, analytics: gaValid(GA_ID) }));
 app.use(compression());
 app.use(express.json({ limit: '20kb' }));
 app.use(cookieParser());
@@ -718,6 +719,8 @@ app.get('/welcome', (req, res) => res.redirect(302, '/account'));
 // The pages check emails and phone numbers with the same rules as the server.
 app.get('/validate.js', (req, res) => res.type('text/javascript; charset=utf-8').set('Cache-Control', 'no-cache')
   .sendFile(path.join(__dirname, 'validate.js')));
+// Google Analytics: every page loads this; it is empty until a Measurement ID is set (see analytics.js).
+app.get('/analytics.js', (req, res) => res.type('text/javascript; charset=utf-8').set('Cache-Control', 'no-cache').send(analyticsScript()));
 app.use(staticFiles(PUBLIC_DIR));
 
 app.use((err, req, res, next) => {
