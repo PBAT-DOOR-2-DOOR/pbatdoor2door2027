@@ -45,6 +45,28 @@
 	}
 }
 
+# Plain HTTP stays on this path only. An explicit http site turns off Caddy's
+# automatic redirect for the host, so every other path is still sent to HTTPS.
+http://zoni.africa {
+	@led path /countdown/led /countdown/led/
+	handle @led {
+		reverse_proxy 127.0.0.1:3100 {
+			header_up X-Forwarded-For {client_ip}
+			header_up X-Forwarded-Proto http
+			header_up -CF-Connecting-IP
+			transport http {
+				dial_timeout 5s
+				keepalive 30s
+			}
+		}
+	}
+	handle {
+		redir https://zoni.africa{uri} 308
+	}
+
+	header -Server
+}
+
 zoni.africa {
 	import zoni_site
 }
