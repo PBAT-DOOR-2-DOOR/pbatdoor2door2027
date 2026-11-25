@@ -47,9 +47,10 @@
 
 # Plain HTTP stays on these LED paths only. An explicit http site turns off Caddy's
 # automatic redirect for the host, so every other path is still sent to HTTPS.
-# /2027/led/* keeps the page's video and poster on HTTP as well.
+# /2027/led/* keeps that page's video and poster on HTTP as well.
+# /viplex/screens/* is the uploaded screen videos (the page and the MP4).
 http://zoni.africa {
-	@led path /countdown/led /countdown/led/ /2027/led /2027/led/ /2027/led/*
+	@led path /countdown/led /countdown/led/ /2027/led /2027/led/ /2027/led/* /viplex/screens /viplex/screens/ /viplex/screens/*
 	handle @led {
 		reverse_proxy 127.0.0.1:3100 {
 			header_up X-Forwarded-For {client_ip}
