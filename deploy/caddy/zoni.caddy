@@ -45,10 +45,11 @@
 	}
 }
 
-# Plain HTTP stays on this path only. An explicit http site turns off Caddy's
+# Plain HTTP stays on these LED paths only. An explicit http site turns off Caddy's
 # automatic redirect for the host, so every other path is still sent to HTTPS.
+# /2027/led/* keeps the page's video and poster on HTTP as well.
 http://zoni.africa {
-	@led path /countdown/led /countdown/led/
+	@led path /countdown/led /countdown/led/ /2027/led /2027/led/ /2027/led/*
 	handle @led {
 		reverse_proxy 127.0.0.1:3100 {
 			header_up X-Forwarded-For {client_ip}
